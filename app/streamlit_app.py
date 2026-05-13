@@ -160,9 +160,142 @@ st.markdown(
     "fault diagnosis with SHAP → cost-aware decision threshold."
 )
 
-tab_overview, tab_detect, tab_diag, tab_decide = st.tabs(
-    ["📈 Live run", "🚨 Detector comparison", "🔍 Diagnosis (SHAP)", "💰 Decision layer"]
+tab_approach, tab_overview, tab_detect, tab_diag, tab_decide = st.tabs(
+    [
+        "🧭 Approach",
+        "📈 Live run",
+        "🚨 Detector comparison",
+        "🔍 Diagnosis (SHAP)",
+        "💰 Decision layer",
+    ]
 )
+
+# ----- Tab 0: data science approach & decisions -----------------------------
+with tab_approach:
+    st.subheader("How a data scientist would frame this problem")
+    st.markdown(
+        """
+A continuous chemical plant produces tens of sensor streams. Three operational
+questions matter to the team that runs it:
+
+1. **Detection** — *is something wrong, right now?*
+2. **Diagnosis** — *which fault is it, and why?*
+3. **Remaining useful life (RUL)** — *how long until I must intervene?*
+
+Each is a different machine-learning problem. A **decision layer** then maps
+the model outputs onto an actual operating choice (alarm / wait / schedule
+maintenance) using the **business cost** of being wrong. This app walks
+through that whole chain on the Tennessee Eastman benchmark.
+"""
+    )
+
+    st.markdown("### 1 · Problem framing & dataset choice")
+    st.markdown(
+        """
+- **Why Tennessee Eastman?** It is the canonical benchmark for continuous
+  chemical process monitoring (Downs & Vogel 1993; Bathelt 2015; Rieth 2017).
+  41 process measurements + 12 manipulated variables, 21 documented fault
+  scenarios — from sharp regime shifts (catalyst poisoning, feed-line loss) to
+  slow drifts (sticking valve, kinetics degradation). It is the closest
+  public stand-in for the data a chemical R&D team actually sees.
+- **Why a synthetic generator inside the app?** Streamlit Cloud has limited
+  storage and the real Rieth release is ~5 GB. The generator here is
+  calibrated to look TEP-like; the published headline numbers come from a
+  separate `make train` run and live in `artifacts/results.json`. Swap to the
+  real data locally with `make download-tep`.
+"""
+    )
+
+    st.markdown("### 2 · EDA insights that drove the design")
+    st.markdown(
+        """
+- **Sensors are strongly cross-correlated** in continuous plants — confirmed
+  by the cross-correlation heatmap in [`01_eda.ipynb`](https://github.com/Gemmagf/sensorlab/blob/main/notebooks/01_eda.ipynb).
+  → use **multivariate** detectors over per-sensor thresholds.
+- Faults show up as **three distinct signatures**: mean shifts (step), trend
+  changes (drift), and variance changes (noise). No single detector covers
+  all three well. → compare **three complementary models** rather than one.
+- A 2-D PCA projection shows good class separability for ~75% of fault types.
+  → **diagnosis is feasible** with a tree ensemble on window-level features.
+"""
+    )
+
+    st.markdown("### 3 · Modelling decisions & rationale")
+    st.markdown(
+        """
+| Decision | Rationale |
+|---|---|
+| Train detectors on **normal data only** | Faults are rare and heterogeneous; a labelled supervised setup would overfit to the specific faults seen at training time and miss novel ones. |
+| Compare 3 detectors, not 1 | **T²/Q** is the gold-standard process baseline; **IsolationForest** is a robust ML default; **LSTM autoencoder** captures the temporal signature. They disagree on the hard cases — a candidate for a production ensemble. |
+| **Split by run**, not by sample | A naive sample split leaks: windows from the same run end up in train and test. The literature standard is to hold whole runs out. |
+| Standardise on **training-normal only** | Otherwise the scaler learns fault-mean and -variance and erases the signal it should preserve. |
+| Diagnosis on **window-level features** (mean, std, slope, range per sensor) | XGBoost on tabular features outperforms an end-to-end CNN on this dataset size and gives clean SHAP attributions. |
+| **SHAP for explainability** | A 0.93 AUROC means nothing in a regulated chemical environment if the engineer can't see *why* the model fired. SHAP per fault identifies the driver sensor — actionable. |
+| **Quantile GBM** for RUL | A single-number "time until fault" with no uncertainty is dangerous; quantile regression returns a calibrated 80% prediction interval. |
+| **Cost-aware threshold** | "Which threshold is best?" has no answer without an economic model. The Decision tab makes the trade-off explicit. |
+"""
+    )
+
+    st.markdown("### 4 · Evaluation discipline")
+    st.markdown(
+        """
+A single metric hides as much as it reveals — each layer is measured by **at
+least three complementary metrics**.
+
+- **Detection** → AUROC (threshold-free), TPR @ FAR = 1 % (operating point),
+  median detection delay in minutes (speed).
+- **Diagnosis** → accuracy, macro-F1 (handles the 22-class imbalance),
+  per-class confusion matrix.
+- **RUL** → MAE on the median prediction + **80 % prediction-interval
+  coverage** (the latter checks calibration, not just accuracy).
+"""
+    )
+
+    st.markdown("### 5 · Honest limitations")
+    st.markdown(
+        """
+Bullet points a senior reviewer will look for and that a strong portfolio
+should pre-empt:
+
+- Numbers come from the **synthetic generator**; the real Rieth 2017 release
+  may shift them. Rerun with `make download-tep` to validate.
+- The 22-class diagnosis at **0.57 accuracy** is honest but not state-of-the-
+  art; per-class breakdown (notebook 03) shows which fault pairs the model
+  confuses — a hierarchical classifier would help.
+- RUL 80 % prediction intervals currently cover ~**69 %** of test samples →
+  slight under-coverage. A **conformal-prediction wrapper** would tighten the
+  bounds to nominal — a clear next step.
+- Headline numbers are reported from a **single seed**. Multi-seed bootstrap
+  confidence intervals would make the claims more rigorous.
+- Single dataset → no cross-process transfer test. Real deployment would need
+  a robustness check against sensor drop-out and recalibration cycles.
+"""
+    )
+
+    st.markdown("### 6 · What this scaffolding buys you in production")
+    st.markdown(
+        """
+- **Detection layer** flags anomalies the operator otherwise sees only when a
+  downstream KPI drifts (off-spec product, scrap, missed delivery).
+- **Diagnosis layer + SHAP** reduces mean-time-to-root-cause: instead of a
+  general "something is off" alarm, the engineer gets *"sensor XMV(10) is
+  the dominant signal — most consistent with fault family F02 (feed loss)."*
+- **RUL layer** turns reactive maintenance into **scheduled** maintenance —
+  fewer unplanned shutdowns.
+- **Decision layer** makes the threshold negotiable with finance / ops:
+  "if you tell me a missed fault costs 20 k CHF and a false alarm 100 CHF,
+  here is the threshold that minimises your expected loss".
+
+The Decision tab in this app is the live version of that conversation.
+"""
+    )
+
+    st.info(
+        "Tip — start with **🚨 Detector comparison** for the headline numbers, "
+        "then walk through **🔍 Diagnosis** and finish on **💰 Decision layer** "
+        "to see scores translated into operating choices.",
+        icon="💡",
+    )
 
 # ----- Tab 1: live run ------------------------------------------------------
 with tab_overview:
