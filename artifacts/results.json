@@ -1,0 +1,392 @@
+{
+  "config": {
+    "data": "synthetic",
+    "seed": 0,
+    "n_runs_per_fault": 4,
+    "n_normal_runs": 12,
+    "fault_run_minutes": 480,
+    "window": 20,
+    "stride": 2,
+    "ae_epochs": 20,
+    "far_target": 0.01,
+    "out": "/Users/gemmagardela/Documents/git_projects/SensorAnomaly/artifacts/results.json"
+  },
+  "dataset": {
+    "source": "synthetic",
+    "n_samples": 15360,
+    "n_runs": 96,
+    "n_sensors": 33,
+    "fault_types": 21
+  },
+  "detection": {
+    "PCA-T2Q": {
+      "auroc_test": 0.7570935545935545,
+      "threshold": 20.410164796700933,
+      "tpr_at_far": 0.14484126984126985,
+      "fraction_detected": 0.5,
+      "median_delay_min": 106.5,
+      "mean_delay_min": 136.14285714285714,
+      "p90_delay_min": 305.4,
+      "fit_seconds": 0.05189108848571777,
+      "n_components": 5
+    },
+    "IForest": {
+      "auroc_test": 0.8419339225589225,
+      "threshold": 0.5874989504198984,
+      "tpr_at_far": 0.3753968253968254,
+      "fraction_detected": 0.7142857142857143,
+      "median_delay_min": 43.5,
+      "mean_delay_min": 86.5,
+      "p90_delay_min": 240.0,
+      "fit_seconds": 1.898820161819458
+    },
+    "LSTM-AE": {
+      "auroc_test": 0.9324860574860575,
+      "threshold": 1.7386730909347534,
+      "tpr_at_far": 0.5857142857142857,
+      "fraction_detected": 0.9047619047619048,
+      "median_delay_min": 42.0,
+      "mean_delay_min": 82.5,
+      "p90_delay_min": 261.0,
+      "fit_seconds": 9.237567901611328,
+      "final_loss": 0.5199482425357734
+    }
+  },
+  "diagnosis": {
+    "accuracy": 0.568075117370892,
+    "macro_f1": 0.576699785309467,
+    "fit_seconds": 67.50449895858765,
+    "top_sensors_per_fault": {
+      "1": [
+        [
+          "XMV(2)",
+          1.396
+        ],
+        [
+          "XMEAS(2)",
+          0.609
+        ],
+        [
+          "XMV(11)",
+          0.584
+        ]
+      ],
+      "2": [
+        [
+          "XMV(10)",
+          0.936
+        ],
+        [
+          "XMEAS(10)",
+          0.79
+        ],
+        [
+          "XMEAS(4)",
+          0.777
+        ]
+      ],
+      "3": [
+        [
+          "XMV(3)",
+          1.476
+        ],
+        [
+          "XMV(9)",
+          0.826
+        ],
+        [
+          "XMV(1)",
+          0.739
+        ]
+      ],
+      "4": [
+        [
+          "XMEAS(21)",
+          1.454
+        ],
+        [
+          "XMV(5)",
+          0.979
+        ],
+        [
+          "XMEAS(19)",
+          0.551
+        ]
+      ],
+      "5": [
+        [
+          "XMEAS(5)",
+          0.896
+        ],
+        [
+          "XMV(6)",
+          0.8
+        ],
+        [
+          "XMEAS(9)",
+          0.685
+        ]
+      ],
+      "6": [
+        [
+          "XMEAS(10)",
+          1.48
+        ],
+        [
+          "XMEAS(18)",
+          0.754
+        ],
+        [
+          "XMV(2)",
+          0.475
+        ]
+      ],
+      "7": [
+        [
+          "XMEAS(1)",
+          1.305
+        ],
+        [
+          "XMV(1)",
+          0.794
+        ],
+        [
+          "XMEAS(4)",
+          0.502
+        ]
+      ],
+      "8": [
+        [
+          "XMEAS(18)",
+          1.068
+        ],
+        [
+          "XMV(9)",
+          0.511
+        ],
+        [
+          "XMV(11)",
+          0.455
+        ]
+      ],
+      "9": [
+        [
+          "XMV(9)",
+          1.408
+        ],
+        [
+          "XMV(4)",
+          1.134
+        ],
+        [
+          "XMEAS(15)",
+          0.709
+        ]
+      ],
+      "10": [
+        [
+          "XMV(8)",
+          0.998
+        ],
+        [
+          "XMEAS(1)",
+          0.987
+        ],
+        [
+          "XMEAS(16)",
+          0.618
+        ]
+      ],
+      "11": [
+        [
+          "XMEAS(21)",
+          0.941
+        ],
+        [
+          "XMEAS(8)",
+          0.9
+        ],
+        [
+          "XMV(5)",
+          0.758
+        ]
+      ],
+      "12": [
+        [
+          "XMV(6)",
+          1.167
+        ],
+        [
+          "XMEAS(8)",
+          0.821
+        ],
+        [
+          "XMEAS(10)",
+          0.528
+        ]
+      ],
+      "13": [
+        [
+          "XMEAS(19)",
+          1.373
+        ],
+        [
+          "XMEAS(20)",
+          0.594
+        ],
+        [
+          "XMEAS(22)",
+          0.505
+        ]
+      ],
+      "14": [
+        [
+          "XMEAS(21)",
+          1.809
+        ],
+        [
+          "XMV(8)",
+          0.667
+        ],
+        [
+          "XMV(5)",
+          0.463
+        ]
+      ],
+      "15": [
+        [
+          "XMV(6)",
+          1.138
+        ],
+        [
+          "XMEAS(13)",
+          0.698
+        ],
+        [
+          "XMEAS(7)",
+          0.48
+        ]
+      ],
+      "16": [
+        [
+          "XMV(2)",
+          1.176
+        ],
+        [
+          "XMEAS(10)",
+          0.462
+        ],
+        [
+          "XMEAS(3)",
+          0.433
+        ]
+      ],
+      "17": [
+        [
+          "XMEAS(1)",
+          1.761
+        ],
+        [
+          "XMEAS(4)",
+          0.495
+        ],
+        [
+          "XMEAS(10)",
+          0.488
+        ]
+      ],
+      "18": [
+        [
+          "XMV(3)",
+          0.903
+        ],
+        [
+          "XMEAS(20)",
+          0.675
+        ],
+        [
+          "XMEAS(13)",
+          0.496
+        ]
+      ],
+      "19": [
+        [
+          "XMEAS(19)",
+          1.16
+        ],
+        [
+          "XMEAS(13)",
+          0.681
+        ],
+        [
+          "XMV(5)",
+          0.604
+        ]
+      ],
+      "20": [
+        [
+          "XMEAS(1)",
+          0.808
+        ],
+        [
+          "XMEAS(3)",
+          0.583
+        ],
+        [
+          "XMEAS(4)",
+          0.537
+        ]
+      ],
+      "21": [
+        [
+          "XMV(3)",
+          1.453
+        ],
+        [
+          "XMEAS(22)",
+          0.622
+        ],
+        [
+          "XMV(4)",
+          0.465
+        ]
+      ]
+    }
+  },
+  "rul": {
+    "mae_minutes": 94.33129685485926,
+    "coverage_80": 0.6880952380952381,
+    "pinball_50": 47.16564842742963,
+    "fit_seconds": 185.54852199554443,
+    "n_test_samples": 1260
+  },
+  "decision": {
+    "PCA-T2Q": {
+      "threshold": 3.612549084338059,
+      "expected_cost_chf": 224500.0,
+      "false_alarms": 1714,
+      "missed_faults": 0,
+      "mean_delay_min": 12.642857142857142
+    },
+    "IForest": {
+      "threshold": 0.5044503858276415,
+      "expected_cost_chf": 148000.0,
+      "false_alarms": 574,
+      "missed_faults": 0,
+      "mean_delay_min": 21.571428571428573
+    },
+    "LSTM-AE": {
+      "threshold": 1.5238851670977436,
+      "expected_cost_chf": 200750.0,
+      "false_alarms": 1444,
+      "missed_faults": 2,
+      "mean_delay_min": 11.304878048780488
+    }
+  },
+  "cost_model": {
+    "false_alarm_cost": 100.0,
+    "missed_fault_cost": 5000.0,
+    "delay_cost_per_min": 50.0,
+    "name": "default"
+  }
+}
