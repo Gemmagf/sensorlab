@@ -45,15 +45,15 @@
     <section id="s02" class="section">
       <div class="grid section-head"><h2 class="col-3"><span class="sec-num">02</span>Acceptance criteria</h2>
         <p class="col-9 lede">Release gates from the runbook, evaluated on this process at start-up. A failed gate means the model is not to be trusted for that purpose until retrained.</p></div>
-      <div class="grid"><table class="col-12 table" id="acceptance"></table></div>
+      <div class="grid"><table class="col-12 table wrap" id="acceptance"></table></div>
     </section>
 
     <!-- 03 -->
     <section id="s03" class="section">
       <div class="grid section-head"><h2 class="col-3"><span class="sec-num">03</span>Ownership</h2>
         <p class="col-9 lede">Who decides each number. Cost and horizon belong to the business; changing one is a retrain, not an edit on the saved model.</p></div>
-      <div class="grid"><table class="col-8 table" id="ownership"></table>
-        <div class="col-4"><div class="label">Thresholds in force</div><table class="table small" id="thresholds"></table></div></div>
+      <div class="grid"><table class="col-8 table wrap" id="ownership"></table>
+        <table class="col-4 table small" id="thresholds"></table></div>
     </section>
 
     <!-- 04 -->
@@ -80,9 +80,9 @@
     <section id="s06" class="section">
       <div class="grid section-head"><h2 class="col-3"><span class="sec-num">06</span>Held-out runs</h2>
         <p class="col-9 lede">One row per test run: when the fault started, when the confirmed alarm came, what was diagnosed at that moment and what the operator was told to do. Click a row to inspect it.</p></div>
-      <div class="grid"><div class="col-12 table-wrap"><table class="table" id="runs"></table></div></div>
-      <div class="grid section-head sub"><h3 class="col-3" id="run-title">Run —</h3>
-        <label class="col-5"><span class="label">Sensors</span><input id="run-sensors" type="text" value="XMEAS(1),XMEAS(5),XMEAS(10),XMEAS(15),XMV(1)"></label></div>
+      <div class="grid"><div class="col-12 table-wrap"><table class="table small" id="runs"></table></div></div>
+      <div class="grid section-head sub"><h3 class="col-6" id="run-title">Run —</h3>
+        <label class="col-6"><span class="label">Sensors shown in the trace chart</span><input id="run-sensors" type="text" value="XMEAS(1),XMEAS(5),XMEAS(10),XMEAS(15),XMV(1)"></label></div>
       <div class="grid">
         <div class="col-12 chart" id="run-traces"></div>
         <div class="col-12 chart" id="run-scores"></div>
@@ -105,8 +105,8 @@
         <p class="col-9 lede">Population Stability Index per sensor on the normal held-out runs versus the training reference. Thresholds sit above the plant's own run-to-run noise floor. Simulate a recalibration to see the monitor react.</p></div>
       <div class="grid controls">
         <label class="col-3"><span class="label">Sensor to recalibrate</span><select id="drift-sensor"></select></label>
-        <label class="col-3"><span class="label">Offset (training std)</span><input id="drift-shift" type="range" min="0" max="3" step="0.25" value="0"><span id="drift-shift-val">0.00</span></label>
-        <div class="col-6 stats" id="drift-status"></div>
+        <label class="col-3"><span class="label">Offset (training std)</span><span class="range-row"><input id="drift-shift" type="range" min="0" max="3" step="0.25" value="0"><output id="drift-shift-val">0.00</output></span></label>
+        <div class="col-6 stats inline" id="drift-status"></div>
       </div>
       <div class="grid"><div class="col-12 chart" id="drift-chart"></div></div>
     </section>
@@ -139,7 +139,7 @@ sensorlab serve                                  # same dashboard with live uplo
     </section>
   </main>
 
-  <footer class="grid"><div class="col-12"><span id="foot-version"></span> · <a href="https://github.com/Gemmagf/sensorlab">github.com/Gemmagf/sensorlab</a> · <a href="api/manifest" id="foot-manifest">manifest</a> · <a href="api/results" id="foot-results">results</a></div></footer>
+  <footer class="grid"><div class="col-12"><span><span id="foot-version"></span> · <a href="https://github.com/Gemmagf/sensorlab">github.com/Gemmagf/sensorlab</a> · <a href="api/manifest" id="foot-manifest">manifest</a> · <a href="api/results" id="foot-results">results</a></span><button class="theme-toggle" id="theme-toggle" type="button">Dark theme</button></div></footer>
   <div id="tooltip" class="tooltip" hidden></div>
   <script src="static/app.js"></script>
 </body>

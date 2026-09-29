@@ -160,8 +160,8 @@
     const h = await api("api/health");
     $("#m-status").textContent = ""; $("#m-drift").textContent = "";
     $("#m-status").append(el("span", { class: "status " + statusClass(h.status) }, `${h.status} · ${h.checks_passed}/${h.checks_total} gates`));
-    $("#m-model").textContent = `sensorlab ${h.model_version} · ${h.model_path.split("/").pop()}`;
-    $("#m-fitted").textContent = fmt.date(h.fitted_at);
+    $("#m-model").textContent = `${h.model_version} · ${h.model_path.split("/").pop()}`;
+    $("#m-fitted").textContent = (h.fitted_at || "").slice(0, 16).replace("T", " ") + " UTC";
     $("#m-primary").textContent = h.primary_detector;
     $("#m-drift").append(el("span", { class: "status " + statusClass(h.drift_status) }, h.drift_status));
     $("#foot-version").textContent = STATIC ? `sensorlab ${h.sensorlab_version} · static build exported ${fmt.date(window.SENSORLAB_STATIC.exported_at)}` : `sensorlab ${h.sensorlab_version} · process started ${fmt.date(h.started_at)}`;
@@ -205,7 +205,7 @@
     o.append(el("thead", {}, el("tr", {}, [el("th", {}, "Knob"), el("th", {}, "Owner"), el("th", { class: "num" }, "Value in force")])));
     o.append(el("tbody", {}, OV.ownership.map((r) => el("tr", {}, [el("td", {}, r.knob), el("td", {}, r.owner), el("td", { class: "num" }, r.key === "far_target" ? fmt.pct(r.value, 1) : typeof r.value === "number" ? fmt.int(r.value) : String(r.value))]))));
     const th = $("#thresholds"); th.innerHTML = "";
-    th.append(el("thead", {}, el("tr", {}, [el("th", {}, "Detector"), el("th", { class: "num" }, "FAR"), el("th", { class: "num" }, "Operating")])));
+    th.append(el("thead", {}, el("tr", {}, [el("th", {}, "Thresholds in force"), el("th", { class: "num" }, "FAR"), el("th", { class: "num" }, "Operating")])));
     th.append(el("tbody", {}, OV.model.detectors.map((d) => el("tr", {}, [el("td", {}, [el("span", { class: "swatch", style: `background:${DET_COLOR[d]}` }), d]), el("td", { class: "num" }, fmt.num(OV.thresholds.far[d], 3)), el("td", { class: "num" }, fmt.num(OV.thresholds.operating[d], 3))]))));
 
     // detection table
@@ -231,7 +231,7 @@
   async function loadRuns() {
     RUNS = await api("api/runs");
     const t = $("#runs"); t.innerHTML = "";
-    t.append(el("thead", {}, el("tr", {}, ["Run", "True fault", "Onset", "First alarm after onset", "Delay", "Pre-onset alarms", "Diagnosed at alarm", "RUL p50 at alarm", "Final action", "Outcome"].map((h, i) => el("th", { class: [2, 3, 4, 5, 7].includes(i) ? "num" : "" }, h)))));
+    t.append(el("thead", {}, el("tr", {}, ["Run", "True fault", "Onset", "First alarm", "Delay", "Pre-onset alarms", "Diagnosed at alarm", "RUL p50", "Final action", "Outcome"].map((h, i) => el("th", { class: [2, 3, 4, 5, 7].includes(i) ? "num" : "" }, h)))));
     const cls = { caught: "good", clean: "good", "false alarm": "warn", missed: "crit" };
     t.append(el("tbody", {}, RUNS.map((r) => { const tr = el("tr", { class: "clickable", "data-run": r.run_id }, [el("td", {}, `#${String(r.run_id).padStart(2, "0")}`), el("td", {}, r.true_fault), el("td", { class: "num" }, fmt.min(r.onset_min)), el("td", { class: "num" }, fmt.min(r.first_alarm_min)), el("td", { class: "num" }, fmt.min(r.delay_min)), el("td", { class: "num" }, r.pre_onset_alarms), el("td", {}, r.diagnosed_at_alarm || "—"), el("td", { class: "num" }, fmt.min(r.rul_p50_at_alarm)), el("td", {}, r.final_action), el("td", {}, el("span", { class: "status " + cls[r.outcome] }, r.outcome))]); tr.addEventListener("click", () => loadRun(r.run_id)); return tr; })));
     const first = RUNS.find((r) => r.true_fault_id === 13) || RUNS.find((r) => r.true_fault_id > 0) || RUNS[0];
@@ -307,6 +307,11 @@
     } catch (e) { msg.textContent = "Error: " + e.message.slice(0, 300); }
     finally { $("#score-btn").disabled = false; $("#score-csv").disabled = false; }
   }
+
+  // ------------------------------------------------------------------ theme (light by default; dark only on request)
+  function applyTheme(t) { if (t === "dark") document.documentElement.setAttribute("data-theme", "dark"); else document.documentElement.removeAttribute("data-theme"); const b = $("#theme-toggle"); if (b) b.textContent = t === "dark" ? "Light theme" : "Dark theme"; }
+  try { applyTheme(localStorage.getItem("sensorlab-theme") || "light"); } catch { applyTheme("light"); }
+  $("#theme-toggle").addEventListener("click", () => { const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark"; applyTheme(next); try { localStorage.setItem("sensorlab-theme", next); } catch {} });
 
   // ------------------------------------------------------------------ boot
   async function boot() {
