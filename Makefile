@@ -1,4 +1,4 @@
-.PHONY: help install test lint format clean train evaluate score serve docker notebook notebooks download-tep
+.PHONY: help install test lint format clean train evaluate score serve site docker notebook notebooks download-tep
 
 VENV     := .venv
 PYTHON   := python3.11
@@ -20,7 +20,8 @@ help:
 	@echo "  make download-tep   Fetch the real Tennessee Eastman dataset"
 	@echo "  make notebook       Launch Jupyter notebook server"
 	@echo "  make notebooks      Regenerate and execute the narrative notebooks"
-	@echo "  make serve          Governance dashboard + scoring API on http://127.0.0.1:8000"
+	@echo "  make site           Export the governance dashboard as static files to site/"
+	@echo "  make serve          Same dashboard with the live scoring API on http://127.0.0.1:8000"
 	@echo "  make docker         Build the container image (model trained at build time)"
 	@echo "  make clean          Remove build/test caches and virtualenv"
 
@@ -60,6 +61,9 @@ notebook:
 notebooks:
 	$(PY) scripts/build_notebooks.py
 	for nb in notebooks/0*.ipynb; do $(BIN)/jupyter nbconvert --to notebook --execute --inplace $$nb; done
+
+site:
+	$(BIN)/sensorlab export-site --train-if-missing
 
 serve:
 	$(BIN)/sensorlab serve --train-if-missing

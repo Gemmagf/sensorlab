@@ -101,3 +101,30 @@ def test_score_upload_json_csv_and_audit(client, tiny_dataset):
     assert (
         client.post("/api/score", files={"file": ("bad.csv", bad, "text/csv")}).status_code == 422
     )
+
+
+def test_export_site_writes_static_bundle(fitted_pipeline, tiny_dataset, tiny_splits, tmp_path):
+    import json
+
+    from sensorlab.server.export import export_site
+
+    state = build_state(
+        model_path=tmp_path / "p.joblib",
+        pipeline=fitted_pipeline,
+        ds=tiny_dataset,
+        masks=tiny_splits,
+    )
+    out = export_site(state, tmp_path / "site", base_href="/sensorlab/")
+    html = (out / "index.html").read_text()
+    assert "window.SENSORLAB_STATIC" in html and '<base href="/sensorlab/" />' in html
+    assert (out / ".nojekyll").exists() and (out / "static" / "app.js").exists()
+    for name in ("health", "overview", "manifest", "runs", "diagnosis", "decision", "drift"):
+        assert (out / "data" / f"{name}.json").exists(), name
+    runs = json.loads((out / "data" / "runs.json").read_text())
+    assert all((out / "data" / "runs" / f"{r['run_id']}.json").exists() for r in runs)
+    dec = json.loads((out / "data" / "decision.json").read_text())
+    det = next(iter(dec["detectors"].values()))
+    assert {"threshold", "false_alarms", "missed_faults", "delay_sum_min"} <= set(det["grid"][0])
+    drift = json.loads((out / "data" / "drift.json").read_text())
+    assert drift["shifts"][0] == 0.0 and "XMEAS(1)" in drift["grid"]
+    assert drift["grid"]["XMEAS(1)"]["3.0"]["psi"]["XMEAS(1)"] > drift["base"]["psi"]["XMEAS(1)"]

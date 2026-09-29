@@ -12,11 +12,46 @@
   };
   const DET_COLOR = { "PCA-T2Q": "var(--series-1)", IForest: "var(--series-2)", "LSTM-AE": "var(--series-3)" };
   const ACTIONS = ["wait", "investigate", "schedule_maintenance", "intervene_now"];
-  const api = async (path, opts) => {
+  const STATIC = !!window.SENSORLAB_STATIC;
+  const fetchJson = async (path, opts) => {
     const r = await fetch(path, opts);
     if (!r.ok) throw new Error(`${path} → ${r.status} ${await r.text()}`);
     return r.status === 204 ? null : r.json();
   };
+  const cache = new Map();
+  const cached = (path) => { if (!cache.has(path)) cache.set(path, fetchJson(path).catch((e) => { cache.delete(path); throw e; })); return cache.get(path); };
+  /** Live: relative `api/...` calls. Static: the same answers from `data/*.json`, with the
+   *  cost curve and the drift simulation computed client-side. */
+  const api = async (path, opts) => {
+    if (!STATIC) return fetchJson(path, opts);
+    const [route, qs] = path.split("?"); const q = new URLSearchParams(qs || "");
+    const simple = { "api/health": "data/health.json", "api/overview": "data/overview.json", "api/manifest": "data/manifest.json", "api/runs": "data/runs.json", "api/diagnosis": "data/diagnosis.json" };
+    if (simple[route]) return cached(simple[route]);
+    if (route === "api/results") return cached("data/results.json").catch(() => null);
+    if (route === "api/audit") return [];
+    if (route.startsWith("api/runs/")) {
+      const d = await cached(`data/runs/${route.split("/")[2]}.json`);
+      const wanted = (q.get("sensors") || "").split(",").map((x) => x.trim()).filter(Boolean);
+      return { ...d, sensors: Object.fromEntries(Object.entries(d.sensors).filter(([n]) => wanted.includes(n))) };
+    }
+    if (route === "api/decision") return staticDecision(await cached("data/decision.json"), q);
+    if (route === "api/drift") return staticDrift(await cached("data/drift.json"), q);
+    throw new Error("no static route for " + path);
+  };
+  function staticDecision(D, q) {
+    const det = q.get("detector") || Object.keys(D.detectors)[0]; const d = D.detectors[det];
+    const fa = q.has("fa") ? +q.get("fa") : D.cost_model.false_alarm_cost, mf = q.has("mf") ? +q.get("mf") : D.cost_model.missed_fault_cost, ld = q.has("ld") ? +q.get("ld") : D.cost_model.delay_cost_per_min;
+    const price = (r) => ({ threshold: r.threshold, expected_cost: fa * r.false_alarms + mf * r.missed_faults + ld * r.delay_sum_min, false_alarms: r.false_alarms, missed_faults: r.missed_faults, mean_delay_min: r.mean_delay_min, n_normal_samples: r.n_normal_samples, n_faulty_runs: r.n_faulty_runs });
+    const priced = d.grid.map(price); let best = 0; priced.forEach((r, i) => { if (r.expected_cost < priced[best].expected_cost) best = i; });
+    return { detector: det, cost_model: { false_alarm_cost: fa, missed_fault_cost: mf, delay_cost_per_min: ld }, grid: priced.map((r) => r.threshold), costs: priced.map((r) => r.expected_cost), false_alarms: priced.map((r) => r.false_alarms), missed_faults: priced.map((r) => r.missed_faults), oracle: priced[best], deployed: price(d.deployed) };
+  }
+  function staticDrift(D, q) {
+    const sensor = q.get("sensor"), shift = +(q.get("shift") || 0);
+    const snapped = D.shifts.reduce((a, b) => (Math.abs(b - shift) < Math.abs(a - shift) ? b : a), D.shifts[0]);
+    const base = D.base; const psi = { ...base.psi }; let status = base.status, alert = base.alert, watch = base.watch;
+    if (sensor && D.grid[sensor]) { const key = Object.keys(D.grid[sensor]).find((k) => Math.abs(+k - snapped) < 1e-9); const g = key != null ? D.grid[sensor][key] : null; if (g) { Object.assign(psi, g.psi); status = g.status; alert = g.alert; watch = g.watch; } }
+    return { psi, n_current: base.n_current, status, alert, watch, alert_thresholds: D.alert_thresholds, watch_thresholds: D.watch_thresholds, noise_floor: D.noise_floor, simulated: { sensor, shift_std: snapped } };
+  }
   const el = (tag, attrs = {}, children = []) => {
     const n = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
@@ -122,20 +157,25 @@
   let OV = null;
 
   async function loadHeader() {
-    const h = await api("/api/health");
+    const h = await api("api/health");
     $("#m-status").textContent = ""; $("#m-drift").textContent = "";
     $("#m-status").append(el("span", { class: "status " + statusClass(h.status) }, `${h.status} · ${h.checks_passed}/${h.checks_total} gates`));
     $("#m-model").textContent = `sensorlab ${h.model_version} · ${h.model_path.split("/").pop()}`;
     $("#m-fitted").textContent = fmt.date(h.fitted_at);
     $("#m-primary").textContent = h.primary_detector;
     $("#m-drift").append(el("span", { class: "status " + statusClass(h.drift_status) }, h.drift_status));
-    $("#foot-version").textContent = `sensorlab ${h.sensorlab_version} · process started ${fmt.date(h.started_at)}`;
+    $("#foot-version").textContent = STATIC ? `sensorlab ${h.sensorlab_version} · static build exported ${fmt.date(window.SENSORLAB_STATIC.exported_at)}` : `sensorlab ${h.sensorlab_version} · process started ${fmt.date(h.started_at)}`;
+    if (STATIC) {
+      $(".brand").append(el("span", { class: "static-badge" }, "static build"));
+      $("#nav-api").hidden = true; $("#foot-manifest").href = "data/manifest.json"; $("#foot-results").href = "data/results.json";
+      $("#score-live").hidden = true; $("#score-static").hidden = false; $("#audit").hidden = true; $("#audit-static").hidden = false;
+    }
   }
 
   function kpi(label, value, unit, sub) { return el("div", { class: "kpi" }, [el("span", { class: "label" }, label), el("div", { class: "value" }, [value, unit ? el("span", { class: "unit" }, unit) : ""]), el("div", { class: "sub" }, sub || "")]); }
 
   async function loadOverview() {
-    OV = await api("/api/overview");
+    OV = await api("api/overview");
     const k = OV.kpis, p = OV.model.primary_detector, ds = OV.model.dataset || {};
     $("#lede").textContent = `Deployed pipeline (primary detector ${p}) evaluated on ${OV.split.test_runs} held-out runs (${OV.split.test_faulty_runs} faulty) · ${OV.split.train_runs} train / ${OV.split.val_runs} validation runs · source ${ds.data || "synthetic"}, seed ${ds.seed ?? "—"} · ${OV.model.n_sensors} sensors at ${OV.model.sample_minutes} min.`;
     const box = $("#kpis"); box.innerHTML = "";
@@ -149,7 +189,7 @@
     );
     // published multi-seed
     try {
-      const r = await api("/api/results");
+      const r = await api("api/results");
       if (r && r.aggregate) { const a = r.aggregate.detection[p]; $("#published-note").textContent = `Published multi-seed results (seeds ${Object.keys(r.seeds).join(", ")}, ${fmt.date(r.generated_at)}): ${p} AUROC ${fmt.num(a.auroc.mean, 3)} ± ${fmt.num(a.auroc.std, 3)}, runs caught ${fmt.pct(a.fraction_detected.mean, 0)}, median delay ${fmt.min(a.median_delay_min.mean)} ± ${fmt.num(a.median_delay_min.std, 0)}; diagnosis accuracy ${fmt.num(r.aggregate.diagnosis.accuracy.mean, 3)} ± ${fmt.num(r.aggregate.diagnosis.accuracy.std, 3)}; RUL coverage ${fmt.pct(r.aggregate.rul.coverage_80.mean, 0)}. This process shows a single seed.`; }
       else $("#published-note").textContent = "No published multi-seed results found (run `sensorlab evaluate --seeds 0 1 2`).";
     } catch { $("#published-note").textContent = ""; }
@@ -180,7 +220,7 @@
 
   async function loadDecision() {
     const q = new URLSearchParams({ detector: $("#dec-detector").value, fa: $("#dec-fa").value, mf: $("#dec-mf").value, ld: $("#dec-ld").value });
-    const d = await api("/api/decision?" + q);
+    const d = await api("api/decision?" + q);
     lineChart($("#cost-chart"), { x: d.grid, series: [{ name: "expected cost", values: d.costs, color: DET_COLOR[d.detector], fmt: fmt.chf }], title: `Expected cost vs threshold · ${d.detector} · test runs`, xLabel: "threshold", yLabel: "CHF", yFmt: (v) => fmt.int(v), yMin: 0, markers: [{ x: d.oracle.threshold, label: "oracle" }, { x: d.deployed.threshold, label: "deployed", dotted: true }], extra: (i) => `<div class="row"><span>false alarms</span><span>${d.false_alarms[i]}</span></div><div class="row"><span>missed</span><span>${d.missed_faults[i]}</span></div>` });
     const s = $("#dec-stats"); s.innerHTML = "";
     const row = (label, a, b) => el("div", { class: "stat" }, [el("span", { class: "label" }, label), el("div", { class: "value" }, a), el("div", { class: "sub" }, `deployed: ${b}`)]);
@@ -189,7 +229,7 @@
 
   let RUNS = [], currentRun = null;
   async function loadRuns() {
-    RUNS = await api("/api/runs");
+    RUNS = await api("api/runs");
     const t = $("#runs"); t.innerHTML = "";
     t.append(el("thead", {}, el("tr", {}, ["Run", "True fault", "Onset", "First alarm after onset", "Delay", "Pre-onset alarms", "Diagnosed at alarm", "RUL p50 at alarm", "Final action", "Outcome"].map((h, i) => el("th", { class: [2, 3, 4, 5, 7].includes(i) ? "num" : "" }, h)))));
     const cls = { caught: "good", clean: "good", "false alarm": "warn", missed: "crit" };
@@ -201,7 +241,7 @@
   async function loadRun(rid) {
     currentRun = rid;
     document.querySelectorAll("#runs tr").forEach((tr) => tr.classList.toggle("selected", tr.dataset.run == rid));
-    const d = await api(`/api/runs/${rid}?sensors=${encodeURIComponent($("#run-sensors").value)}`);
+    const d = await api(`api/runs/${rid}?sensors=${encodeURIComponent($("#run-sensors").value)}`);
     $("#run-title").textContent = `Run #${String(rid).padStart(2, "0")} · ${d.true_fault}`;
     const band = d.onset_index >= 0 ? { from: d.onset_min } : null;
     const palette = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--ink-2)", "var(--ink-3)"];
@@ -217,7 +257,7 @@
   }
 
   async function loadDiagnosis() {
-    const d = await api("/api/diagnosis");
+    const d = await api("api/diagnosis");
     const s = $("#diag-stats"); s.innerHTML = "";
     const stat = (l, v, sub) => el("div", { class: "stat" }, [el("span", { class: "label" }, l), el("div", { class: "value" }, v), el("div", { class: "sub" }, sub || "")]);
     s.append(stat("Accuracy (test)", fmt.num(d.metrics.accuracy, 3)), stat("Balanced accuracy", fmt.num(d.metrics.balanced_accuracy, 3)), stat("Macro-F1", fmt.num(d.metrics.macro_f1, 3), `${d.metrics.n_samples} test windows`));
@@ -229,7 +269,7 @@
   async function loadDrift() {
     const sensor = $("#drift-sensor").value, shift = $("#drift-shift").value;
     $("#drift-shift-val").textContent = fmt.num(shift, 2);
-    const d = await api(`/api/drift?sensor=${encodeURIComponent(sensor)}&shift=${shift}`);
+    const d = await api(`api/drift?sensor=${encodeURIComponent(sensor)}&shift=${shift}`);
     const s = $("#drift-status"); s.innerHTML = "";
     s.append(el("div", { class: "stat" }, [el("span", { class: "label" }, "Status on normal held-out runs"), el("div", { class: "value" }, el("span", { class: "status " + statusClass(d.status) }, d.status)), el("div", { class: "sub" }, `${d.n_current} samples · alert: ${d.alert.length ? d.alert.join(", ") : "none"} · watch: ${d.watch.length ? d.watch.join(", ") : "none"}`)]));
     const items = Object.entries(d.psi).map(([n, v]) => ({ label: n, value: v, color: d.alert.includes(n) ? "var(--crit)" : d.watch.includes(n) ? "var(--warn)" : "var(--series-1)", marks: [{ x: d.watch_thresholds[n], color: "var(--warn)", dash: "2 2" }, { x: d.alert_thresholds[n], color: "var(--crit)" }], tip: `<div class="t">${n}</div><div class="row"><span>PSI</span><span>${fmt.num(v, 3)}</span></div><div class="row"><span>noise floor</span><span>${fmt.num(d.noise_floor[n], 3)}</span></div><div class="row"><span>watch / alert</span><span>${fmt.num(d.watch_thresholds[n], 2)} / ${fmt.num(d.alert_thresholds[n], 2)}</span></div>` }));
@@ -237,7 +277,7 @@
   }
 
   async function loadAudit() {
-    const rows = await api("/api/audit");
+    const rows = await api("api/audit");
     const t = $("#audit"); t.innerHTML = "";
     t.append(el("thead", {}, el("tr", {}, ["When", "File", "Rows", "Runs", "Alarms", "Actions", "Drift"].map((h, i) => el("th", { class: [2, 3, 4].includes(i) ? "num" : "" }, h)))));
     t.append(el("tbody", {}, rows.length ? rows.map((r) => el("tr", {}, [el("td", {}, fmt.date(r.at)), el("td", {}, r.file || "—"), el("td", { class: "num" }, fmt.int(r.rows)), el("td", { class: "num" }, r.runs), el("td", { class: "num" }, fmt.int(r.alarms)), el("td", {}, Object.entries(r.actions).map(([a, b]) => `${b} ${a}`).join(", ")), el("td", {}, r.drift_status ? el("span", { class: "status " + statusClass(r.drift_status) }, r.drift_status + (r.drift_alert.length ? " · " + r.drift_alert.slice(0, 3).join(", ") : "")) : "—")])) : [el("tr", {}, el("td", { colspan: 7 }, "No scoring calls yet."))]));
@@ -250,10 +290,10 @@
     try {
       const fd = new FormData(); fd.append("file", f);
       if (asCsv) {
-        const r = await fetch("/api/score?format=csv", { method: "POST", body: fd }); if (!r.ok) throw new Error(await r.text());
+        const r = await fetch("api/score?format=csv", { method: "POST", body: fd }); if (!r.ok) throw new Error(await r.text());
         const blob = await r.blob(); const a = el("a", { href: URL.createObjectURL(blob), download: `scored_${f.name.replace(/\.[^.]+$/, "")}.csv` }); document.body.append(a); a.click(); a.remove(); msg.textContent = "Downloaded.";
       } else {
-        const d = await api("/api/score", { method: "POST", body: fd });
+        const d = await api("api/score", { method: "POST", body: fd });
         const s = $("#score-stats"); s.innerHTML = "";
         const stat = (l, v, sub) => el("div", { class: "stat" }, [el("span", { class: "label" }, l), el("div", { class: "value" }, v), el("div", { class: "sub" }, sub || "")]);
         s.append(stat("Rows scored", fmt.int(d.summary.rows), `${d.summary.runs} run(s)`), stat("Confirmed alarms", fmt.int(d.summary.alarms)), stat("Actions", Object.entries(d.summary.actions).map(([a, b]) => `${b} ${a}`).join(" · ")), stat("Drift", d.drift ? el("span", { class: "status " + statusClass(d.drift.status) }, d.drift.status) : "—", d.drift && d.drift.alert.length ? "alert: " + d.drift.alert.join(", ") : ""));
@@ -276,13 +316,13 @@
       loadDecision();
       loadRuns();
       loadDiagnosis().catch((e) => { $("#diag-stats").textContent = "Diagnosis unavailable: " + e.message; });
-      const sel = $("#drift-sensor"); OV.ownership && (await api("/api/manifest")).sensor_names.forEach((n) => sel.append(el("option", { value: n }, n)));
+      const sel = $("#drift-sensor"); OV.ownership && (await api("api/manifest")).sensor_names.forEach((n) => sel.append(el("option", { value: n }, n)));
       loadDrift();
       loadAudit();
       ["#dec-detector", "#dec-fa", "#dec-mf", "#dec-ld"].forEach((s) => $(s).addEventListener("change", loadDecision));
       $("#drift-sensor").addEventListener("change", loadDrift); $("#drift-shift").addEventListener("input", loadDrift);
       $("#run-sensors").addEventListener("change", () => currentRun != null && loadRun(currentRun));
-      $("#score-btn").addEventListener("click", () => scoreBatch(false)); $("#score-csv").addEventListener("click", () => scoreBatch(true));
+      if (!STATIC) { $("#score-btn").addEventListener("click", () => scoreBatch(false)); $("#score-csv").addEventListener("click", () => scoreBatch(true)); }
     } catch (e) { document.body.prepend(el("p", { class: "fail", style: "padding:16px 24px" }, "Dashboard failed to load: " + e.message)); }
   }
   boot();

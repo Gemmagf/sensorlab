@@ -34,12 +34,15 @@
 - Conformal (CQR) calibration of the RUL interval on validation data; raw and calibrated coverage
   are both reported. RUL head switched to `HistGradientBoostingRegressor` (40× faster fit).
 - `TEPDataset.validate()`, `active_fault_id`, `run_mask()`; `dataset_from_rieth_frame()`.
+- `sensorlab export-site` + `.github/workflows/pages.yml`: the governance dashboard as static
+  files on GitHub Pages — every panel precomputed to JSON, the cost curve priced client-side
+  from cost-independent counts, the drift simulator from a sensor × offset grid.
 - `sensorlab serve` + `sensorlab.server`: FastAPI scoring API (`/api/score`, `/api/health`,
   `/api/drift`, …) and a static **governance dashboard** (acceptance gates, ownership,
   benchmark, cost curve, run inspector, SHAP, drift simulator, upload-and-score, audit log) in
   plain HTML/SVG. `Dockerfile` with the reference model trained at build time.
 - Notebook 06 (end-to-end pipeline), CI smoke test of the CLI, `docs/runbook.md`.
-- 109 tests (was 65).
+- 110 tests (was 65).
 
 ### Removed
 - The Streamlit app (`app/streamlit_app.py`, `requirements.txt`, `runtime.txt`). The dashboard

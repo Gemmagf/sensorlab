@@ -6,7 +6,7 @@
   <title>sensorlab · Model governance</title>
   <meta name="description" content="Governance dashboard for the sensorlab fault-detection pipeline: health, acceptance criteria, ownership, held-out performance, drift and audited scoring." />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23e30613'/%3E%3Crect x='3' y='7' width='10' height='2' fill='%23fff'/%3E%3Crect x='7' y='3' width='2' height='10' fill='%23fff'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="static/styles.css" />
 </head>
 <body>
   <header class="masthead">
@@ -29,7 +29,7 @@
     <a href="#s01">01 Overview</a><a href="#s02">02 Acceptance</a><a href="#s03">03 Ownership</a>
     <a href="#s04">04 Detection</a><a href="#s05">05 Decision</a><a href="#s06">06 Runs</a>
     <a href="#s07">07 Diagnosis</a><a href="#s08">08 Drift</a><a href="#s09">09 Scoring</a><a href="#s10">10 Audit</a>
-    <a href="/api/docs" target="_blank" rel="noopener">API ↗</a>
+    <a href="api/docs" target="_blank" rel="noopener" id="nav-api">API ↗</a>
   </nav>
 
   <main>
@@ -115,23 +115,32 @@
     <section id="s09" class="section">
       <div class="grid section-head"><h2 class="col-3"><span class="sec-num">09</span>Score a batch</h2>
         <p class="col-9 lede">Upload a CSV or parquet of sensor rows (training sensor columns, optional <code>run_id</code>). Returns per-sample scores, confirmed alarms, diagnosis, RUL interval and action, and logs the call below.</p></div>
-      <div class="grid controls">
-        <label class="col-4"><span class="label">File</span><input id="score-file" type="file" accept=".csv,.parquet,.pq"></label>
-        <div class="col-8 actions"><button id="score-btn" class="btn">Score</button><button id="score-csv" class="btn secondary">Download scored CSV</button><span id="score-msg" class="msg"></span></div>
+      <div id="score-live">
+        <div class="grid controls">
+          <label class="col-4"><span class="label">File</span><input id="score-file" type="file" accept=".csv,.parquet,.pq"></label>
+          <div class="col-8 actions"><button id="score-btn" class="btn">Score</button><button id="score-csv" class="btn secondary">Download scored CSV</button><span id="score-msg" class="msg"></span></div>
+        </div>
+        <div class="grid"><div class="col-4 stats" id="score-stats"></div><div class="col-8 table-wrap"><table class="table small" id="score-preview"></table></div></div>
       </div>
-      <div class="grid"><div class="col-4 stats" id="score-stats"></div><div class="col-8 table-wrap"><table class="table small" id="score-preview"></table></div></div>
+      <div id="score-static" class="grid" hidden>
+        <div class="col-12"><p class="note">This is the static build (GitHub Pages): there is no scoring backend behind it. Score a batch with the CLI, or run the API locally.</p>
+<pre class="code">pip install "sensorlab @ git+https://github.com/Gemmagf/sensorlab"
+sensorlab train                                  # or use your own models/pipeline.joblib
+sensorlab score --input batch.csv --output scored.csv --drift
+sensorlab serve                                  # same dashboard with live upload-and-score at http://127.0.0.1:8000</pre></div>
+      </div>
     </section>
 
     <!-- 10 -->
     <section id="s10" class="section">
       <div class="grid section-head"><h2 class="col-3"><span class="sec-num">10</span>Audit log</h2>
         <p class="col-9 lede">Scoring calls made against this process, newest first.</p></div>
-      <div class="grid"><table class="col-12 table small" id="audit"></table></div>
+      <div class="grid"><table class="col-12 table small" id="audit"></table><p class="col-12 note" id="audit-static" hidden>Not available in the static build: the audit log lives in the process that scores (<code>sensorlab serve</code>).</p></div>
     </section>
   </main>
 
-  <footer class="grid"><div class="col-12"><span id="foot-version"></span> · <a href="https://github.com/Gemmagf/sensorlab">github.com/Gemmagf/sensorlab</a> · <a href="/api/manifest">manifest</a> · <a href="/api/results">results</a></div></footer>
+  <footer class="grid"><div class="col-12"><span id="foot-version"></span> · <a href="https://github.com/Gemmagf/sensorlab">github.com/Gemmagf/sensorlab</a> · <a href="api/manifest" id="foot-manifest">manifest</a> · <a href="api/results" id="foot-results">results</a></div></footer>
   <div id="tooltip" class="tooltip" hidden></div>
-  <script src="/static/app.js"></script>
+  <script src="static/app.js"></script>
 </body>
 </html>

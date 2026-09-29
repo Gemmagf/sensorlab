@@ -52,8 +52,11 @@ alarm, fault, RUL p50 <= intervene_horizon_min  -> intervene_now
 
 ### The governance dashboard
 
-`sensorlab serve` (or the container) serves the dashboard on `/` and the API on `/api`
-(`/api/docs` is the OpenAPI page). Sections map to this runbook: **02 Acceptance** is §5's
+The published page (GitHub Pages, built by `.github/workflows/pages.yml` from
+`sensorlab export-site`) is the read-only governance view: it shows the state of the reference
+model at the last push and needs no server. `sensorlab serve` (or the container) serves the
+same page on `/` with the live API on `/api` (`/api/docs` is the OpenAPI page) for
+upload-and-score and the audit log. Sections map to this runbook: **02 Acceptance** is §5's
 release criteria evaluated on the held-out runs at start-up, **03 Ownership** is §3,
 **08 Drift** is §4 step 1, **09/10** are §2 with its audit trail. `/api/health` returns
 `degraded` when any acceptance gate fails; wire it to your monitoring.

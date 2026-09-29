@@ -17,10 +17,10 @@ decision layer** turns all of that into one of four actions: `wait`, `investigat
 `schedule_maintenance`, `intervene_now`.
 
 The deliverable is not a notebook. It is one fitted object (`MonitoringPipeline`) with a
-manifest, a CLI (`sensorlab train | evaluate | score | serve`), a drift monitor, a
-**governance dashboard + scoring API** (FastAPI, one container) and an
-[operations runbook](docs/runbook.md) — built the way a forward-deployed engineer hands a
-model to the people who will live with it.
+manifest, a CLI (`sensorlab train | evaluate | score | serve | export-site`), a drift monitor, a
+**governance dashboard** published as static files on GitHub Pages (with an optional FastAPI
+scoring backend for live use) and an [operations runbook](docs/runbook.md) — built the way a
+forward-deployed engineer hands a model to the people who will live with it.
 
 ---
 
@@ -28,7 +28,7 @@ model to the people who will live with it.
 
 ```bash
 make install                         # .venv (Python 3.11), CPU torch, app + dev extras
-make test                            # 109 tests, ~30 s
+make test                            # 110 tests, ~30 s
 
 sensorlab train                      # fit on synthetic TEP-like data, evaluate on held-out runs,
                                      # -> models/pipeline.joblib (+ manifest), artifacts/train_results.json
@@ -36,8 +36,8 @@ sensorlab score --input batch.csv --output scored.csv --drift
                                      # one row per sample: scores, confirmed alarm, fault, RUL, action
 sensorlab evaluate --seeds 0 1 2     # the multi-seed numbers below (~1 min)
 
-make serve                           # governance dashboard + API on http://127.0.0.1:8000
-make docker && docker run -p 8000:8000 sensorlab   # same thing, one container
+sensorlab export-site                # static governance dashboard -> site/ (what GitHub Pages serves)
+make serve                           # same dashboard with live upload-and-score, http://127.0.0.1:8000
 make notebook                        # 01_eda … 06_pipeline
 ```
 
@@ -164,9 +164,16 @@ and the final action.
 
 ```bash
 sensorlab train                     # models/pipeline.joblib + pipeline.manifest.json
-sensorlab serve                     # http://127.0.0.1:8000  (dashboard)  ·  /api/docs (OpenAPI)
+sensorlab export-site               # site/ — plain HTML + JSON, published by .github/workflows/pages.yml
+sensorlab serve                     # optional: the same page with live scoring, http://127.0.0.1:8000
 curl -F file=@batch.csv "http://127.0.0.1:8000/api/score?format=csv" > scored.csv
 ```
+
+**Live on GitHub Pages:** every push to `main` trains the reference model, exports the
+dashboard (every panel precomputed to JSON, the cost curve priced in the browser from
+cost-independent counts, the drift simulator from a sensor × offset grid) and deploys the
+folder. No server, no cloud account, nothing that phones home — a governance page anyone
+with the link can read. Enable it once under *Settings → Pages → Source: GitHub Actions*.
 
 ![sensorlab governance dashboard](docs/dashboard.png)
 
@@ -175,8 +182,8 @@ health, the runbook's acceptance gates evaluated live (PASS/FAIL), who owns each
 value in force, the detection benchmark with the FAR calibration check, the cost curve with
 the shipped threshold against the oracle, every held-out run with its outcome and an inspector
 (traces, score vs threshold, RUL band, action timeline), SHAP driver sensors, PSI drift with a
-recalibration simulator, an upload-and-score form and an audit log of every scoring call. Plain
-HTML and SVG served by the same process as the API; nothing to build, nothing to phone home.
+recalibration simulator and — in the live build only — an upload-and-score form with an audit
+log of every scoring call. Plain HTML and SVG, no build step, works from a file server.
 
 1. **One artefact, one manifest.** `sensorlab train` writes `pipeline.joblib` and a JSON model
    card (version, config, sensor layout, thresholds, fit report). `sensorlab info` prints it.
@@ -191,9 +198,8 @@ HTML and SVG served by the same process as the API; nothing to build, nothing to
    floor (measured leave-one-run-out at fit time); the runbook says what `watch` and `alert`
    mean and who acts.
 5. **It runs without a data scientist.** `sensorlab score --input batch.csv --drift` in a
-   scheduled job, or `POST /api/score` from the plant historian; the container image trains
-   the reference model at build time and exposes a health check; CI smoke-tests the same path
-   on every push.
+   scheduled job, or `POST /api/score` from the plant historian when the API is on; the
+   governance page itself is static and republished by CI on every push to `main`.
 
 ### Onboarding another plant
 
@@ -205,9 +211,9 @@ onset at sample 20 (train files) or 160 (test files).
 
 ## 🧪 Engineering discipline
 
-* 109 tests in ~30 s, including an end-to-end pipeline fit / predict / save / load / evaluate on a
-  tiny dataset, a CLI round trip through `train → score → info`, and the API served through
-  FastAPI's test client (upload, CSV download, audit, 404/422 paths).
+* 110 tests in ~30 s, including an end-to-end pipeline fit / predict / save / load / evaluate on a
+  tiny dataset, a CLI round trip through `train → score → info`, the API served through
+  FastAPI's test client (upload, CSV download, audit, 404/422 paths) and the static export.
 * CI on Python 3.11 and 3.12: ruff, pytest with coverage, CLI smoke test. CPU-only torch keeps
   the job short.
 * Notebooks are generated from `scripts/build_notebooks.py` and executed, so they cannot drift
@@ -241,12 +247,13 @@ src/sensorlab/
 ├── evaluation.py        leakage-guarded evaluation · multi-seed aggregation
 ├── monitoring.py        PSI drift monitor
 ├── pipeline.py          MonitoringPipeline: fit / predict / evaluate / save / load
-├── cli.py               sensorlab train | evaluate | score | serve | info
-├── server/              FastAPI app + static governance dashboard (index.html, app.js, styles.css)
+├── cli.py               sensorlab train | evaluate | score | serve | export-site | info
+├── server/              FastAPI app, static export, governance dashboard (index.html, app.js, styles.css)
 └── viz/                 matplotlib helpers
 notebooks/               01_eda … 06_pipeline (generated + executed)
 docs/runbook.md          operations runbook
-Dockerfile               python:3.11-slim, CPU torch, model trained at build, health check
+.github/workflows/       ci.yml (lint, tests, CLI smoke) · pages.yml (train, export, deploy to GitHub Pages)
+Dockerfile               optional live API: python:3.11-slim, CPU torch, model trained at build
 artifacts/results.json   multi-seed held-out results (source of truth for the tables above)
 ```
 

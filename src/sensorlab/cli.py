@@ -1,9 +1,10 @@
-"""Command-line interface: ``sensorlab train | evaluate | score | serve | info``.
+"""Command-line interface: ``sensorlab train | evaluate | score | serve | export-site | info``.
 
 * ``train``     fit one pipeline, evaluate it on held-out runs, save model + results
 * ``evaluate``  the same experiment over several seeds, reporting mean ± std
 * ``score``     run a saved pipeline on a CSV/parquet of sensor rows (batch inference)
 * ``serve``     governance dashboard + scoring API (FastAPI) for a saved pipeline
+* ``export-site`` the same dashboard as static files (GitHub Pages, no backend)
 * ``info``      print the manifest of a saved pipeline
 
 Every command is deterministic given its arguments and writes machine-readable
@@ -305,6 +306,24 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export_site(args: argparse.Namespace) -> int:
+    from sensorlab.server import build_state
+    from sensorlab.server.export import export_site
+
+    if not Path(args.model).exists():
+        if not args.train_if_missing:
+            log.error(
+                "no model at %s — run `sensorlab train` or pass --train-if-missing", args.model
+            )
+            return 2
+        log.warning("no model at %s — training one now", args.model)
+        cmd_train(build_parser().parse_args(["train", "--model-out", str(args.model)]))
+    state = build_state(model_path=args.model, results_path=args.results)
+    out = export_site(state, args.out, base_href=args.base_href)
+    print(f"static site written to {out} — open {out / 'index.html'} or publish the folder")
+    return 0
+
+
 def cmd_info(args: argparse.Namespace) -> int:
     pipe = MonitoringPipeline.load(args.model)
     print(json.dumps(pipe.manifest(), indent=2, default=str))
@@ -356,6 +375,16 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--port", type=int, default=8000)
     v.add_argument("--train-if-missing", action="store_true")
     v.set_defaults(func=cmd_serve)
+
+    x = sub.add_parser("export-site", help="write the dashboard as static files (GitHub Pages)")
+    x.add_argument("--model", type=Path, default=MODELS_DIR / "pipeline.joblib")
+    x.add_argument("--results", type=Path, default=ARTIFACTS_DIR / "results.json")
+    x.add_argument("--out", type=Path, default=PROJECT_ROOT / "site")
+    x.add_argument(
+        "--base-href", default=None, help='e.g. "/sensorlab/" when hosted under a sub-path'
+    )
+    x.add_argument("--train-if-missing", action="store_true")
+    x.set_defaults(func=cmd_export_site)
 
     i = sub.add_parser("info", help="print the manifest of a saved pipeline")
     i.add_argument("--model", type=Path, default=MODELS_DIR / "pipeline.joblib")
