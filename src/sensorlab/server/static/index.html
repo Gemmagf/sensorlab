@@ -30,6 +30,7 @@
     <a href="#s04">04 Detection</a><a href="#s05">05 Decision</a><a href="#s06">06 Runs</a>
     <a href="#s07">07 Diagnosis</a><a href="#s08">08 Drift</a><a href="#s09">09 Scoring</a><a href="#s10">10 Audit</a>
     <a href="api/docs" target="_blank" rel="noopener" id="nav-api">API ↗</a>
+    <button class="howto-btn" id="howto-btn" type="button" aria-haspopup="dialog" aria-controls="howto"><span class="q">?</span> How to use it</button>
   </nav>
 
   <main>
@@ -45,15 +46,15 @@
     <section id="s02" class="section">
       <div class="grid section-head"><h2 class="col-3"><span class="sec-num">02</span>Acceptance criteria</h2>
         <p class="col-9 lede">Release gates from the runbook, evaluated on this process at start-up. A failed gate means the model is not to be trusted for that purpose until retrained.</p></div>
-      <div class="grid"><table class="col-12 table" id="acceptance"></table></div>
+      <div class="grid"><table class="col-12 table wrap" id="acceptance"></table></div>
     </section>
 
     <!-- 03 -->
     <section id="s03" class="section">
       <div class="grid section-head"><h2 class="col-3"><span class="sec-num">03</span>Ownership</h2>
         <p class="col-9 lede">Who decides each number. Cost and horizon belong to the business; changing one is a retrain, not an edit on the saved model.</p></div>
-      <div class="grid"><table class="col-8 table" id="ownership"></table>
-        <div class="col-4"><div class="label">Thresholds in force</div><table class="table small" id="thresholds"></table></div></div>
+      <div class="grid"><table class="col-8 table wrap" id="ownership"></table>
+        <table class="col-4 table small" id="thresholds"></table></div>
     </section>
 
     <!-- 04 -->
@@ -80,9 +81,9 @@
     <section id="s06" class="section">
       <div class="grid section-head"><h2 class="col-3"><span class="sec-num">06</span>Held-out runs</h2>
         <p class="col-9 lede">One row per test run: when the fault started, when the confirmed alarm came, what was diagnosed at that moment and what the operator was told to do. Click a row to inspect it.</p></div>
-      <div class="grid"><div class="col-12 table-wrap"><table class="table" id="runs"></table></div></div>
-      <div class="grid section-head sub"><h3 class="col-3" id="run-title">Run —</h3>
-        <label class="col-5"><span class="label">Sensors</span><input id="run-sensors" type="text" value="XMEAS(1),XMEAS(5),XMEAS(10),XMEAS(15),XMV(1)"></label></div>
+      <div class="grid"><div class="col-12 table-wrap"><table class="table small" id="runs"></table></div></div>
+      <div class="grid section-head sub"><h3 class="col-6" id="run-title">Run —</h3>
+        <label class="col-6"><span class="label">Sensors shown in the trace chart</span><input id="run-sensors" type="text" value="XMEAS(1),XMEAS(5),XMEAS(10),XMEAS(15),XMV(1)"></label></div>
       <div class="grid">
         <div class="col-12 chart" id="run-traces"></div>
         <div class="col-12 chart" id="run-scores"></div>
@@ -105,8 +106,8 @@
         <p class="col-9 lede">Population Stability Index per sensor on the normal held-out runs versus the training reference. Thresholds sit above the plant's own run-to-run noise floor. Simulate a recalibration to see the monitor react.</p></div>
       <div class="grid controls">
         <label class="col-3"><span class="label">Sensor to recalibrate</span><select id="drift-sensor"></select></label>
-        <label class="col-3"><span class="label">Offset (training std)</span><input id="drift-shift" type="range" min="0" max="3" step="0.25" value="0"><span id="drift-shift-val">0.00</span></label>
-        <div class="col-6 stats" id="drift-status"></div>
+        <label class="col-3"><span class="label">Offset (training std)</span><span class="range-row"><input id="drift-shift" type="range" min="0" max="3" step="0.25" value="0"><output id="drift-shift-val">0.00</output></span></label>
+        <div class="col-6 stats inline" id="drift-status"></div>
       </div>
       <div class="grid"><div class="col-12 chart" id="drift-chart"></div></div>
     </section>
@@ -139,7 +140,83 @@ sensorlab serve                                  # same dashboard with live uplo
     </section>
   </main>
 
-  <footer class="grid"><div class="col-12"><span id="foot-version"></span> · <a href="https://github.com/Gemmagf/sensorlab">github.com/Gemmagf/sensorlab</a> · <a href="api/manifest" id="foot-manifest">manifest</a> · <a href="api/results" id="foot-results">results</a></div></footer>
+  <footer class="grid"><div class="col-12"><span><span id="foot-version"></span> · <a href="https://github.com/Gemmagf/sensorlab">github.com/Gemmagf/sensorlab</a> · <a href="api/manifest" id="foot-manifest">manifest</a> · <a href="api/results" id="foot-results">results</a></span><button class="theme-toggle" id="theme-toggle" type="button">Dark theme</button></div></footer>
+  <dialog id="howto" class="howto" aria-labelledby="howto-title">
+    <div class="howto-head">
+      <div><span class="sec-num">Guide</span><h2 id="howto-title">How to use this dashboard</h2></div>
+      <button class="btn secondary" id="howto-close" type="button" aria-label="Close">Close</button>
+    </div>
+    <nav class="howto-toc">
+      <a href="#g1">What it is</a><a href="#g2">Reading the page</a><a href="#g3">Actions &amp; thresholds</a><a href="#g4">Drift</a><a href="#g5">Score your data</a><a href="#g6">Your own plant</a>
+    </nav>
+    <div class="howto-body">
+      <section id="g1">
+        <h3>1 · What you are looking at</h3>
+        <p>A continuous chemical plant emits dozens of correlated sensor streams. The pipeline behind this page turns them into an operational decision in four layers. Everything shown here is measured on <strong>held-out test runs</strong> the model never saw, with thresholds fixed on validation.</p>
+        <table class="table small wrap">
+          <thead><tr><th>Layer</th><th>Question</th><th>How</th></tr></thead>
+          <tbody>
+            <tr><td>Detection</td><td>Is something wrong right now?</td><td>Three detectors trained on normal operation only (PCA T²/Q, Isolation Forest, LSTM autoencoder). Each gives an anomaly score per sample.</td></tr>
+            <tr><td>Diagnosis</td><td>Which fault, and which sensor drives it?</td><td>XGBoost on window features per sensor, explained with SHAP aggregated per sensor.</td></tr>
+            <tr><td>Remaining useful life</td><td>How long until I must intervene?</td><td>Quantile gradient boosting (p10 / p50 / p90) with a conformal margin so the 80 % interval really covers 80 %.</td></tr>
+            <tr><td>Decision</td><td>What should the operator do?</td><td>A cost model picks the operating threshold; confirmed alarm × diagnosis × RUL → one of four actions.</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section id="g2">
+        <h3>2 · Reading the page, top to bottom</h3>
+        <table class="table small wrap">
+          <tbody>
+            <tr><td>Masthead</td><td>Model version, fit date, primary detector, health (<em>ok</em> = every gate passes) and drift on the reference batch.</td></tr>
+            <tr><td>01 Overview</td><td>The six numbers that matter. The grey line quotes the published multi-seed results for comparison.</td></tr>
+            <tr><td>02 Acceptance</td><td>Release gates from the runbook, PASS / FAIL, with the observed value and the limit.</td></tr>
+            <tr><td>03 Ownership</td><td>Who decides each knob and the value in force. Costs and horizon belong to the business; changing one is a retrain.</td></tr>
+            <tr><td>04 Detection</td><td>Compare detectors. <em>FAR observed</em> against the 1 % target is the calibration check.</td></tr>
+            <tr><td>05 Decision</td><td><strong>Type your own costs</strong>; the curve re-prices instantly. Solid marker = oracle optimum on test, dotted = the threshold the model shipped with. The gap is the honest cost of choosing on validation.</td></tr>
+            <tr><td>06 Runs</td><td>One row per test run with its outcome. <strong>Click a row</strong> to open the inspector: raw traces, primary score vs operating threshold, the other detectors normalised to their own threshold, the RUL band and the action timeline. Edit the sensor list to plot other channels.</td></tr>
+            <tr><td>07 Diagnosis</td><td>Accuracy, balanced accuracy, macro-F1 and the three driver sensors per fault.</td></tr>
+            <tr><td>08 Drift</td><td>PSI per sensor with watch (dashed) and alert (solid) marks. <strong>Pick a sensor and drag the offset</strong> to simulate a recalibration.</td></tr>
+            <tr><td>09 Scoring</td><td>Live build: upload a CSV/parquet and download the scored file. Static build: the CLI commands to do the same.</td></tr>
+            <tr><td>10 Audit</td><td>Live build: every scoring call made against this process.</td></tr>
+          </tbody>
+        </table>
+        <p>Hover any chart for exact values. The footer button switches to a dark theme.</p>
+      </section>
+      <section id="g3">
+        <h3>3 · Actions and thresholds</h3>
+        <table class="table small wrap">
+          <thead><tr><th>Action</th><th>Meaning</th><th>Rule</th></tr></thead>
+          <tbody>
+            <tr><td><code>wait</code></td><td>Nothing to do.</td><td>No confirmed alarm.</td></tr>
+            <tr><td><code>investigate</code></td><td>The detector fired but the classifier reads Normal: a novel or not-yet-recognisable pattern.</td><td>Alarm and predicted fault = Normal.</td></tr>
+            <tr><td><code>schedule_maintenance</code></td><td>Fault identified, time to plan.</td><td>Alarm, fault, RUL median above the horizon.</td></tr>
+            <tr><td><code>intervene_now</code></td><td>Fault identified, horizon exceeded.</td><td>Alarm, fault, RUL median at or below the horizon.</td></tr>
+          </tbody>
+        </table>
+        <p>An alarm is <strong>confirmed</strong> only after three consecutive samples (9 minutes) above the operating threshold within the same run. Each detector has two thresholds: the <strong>FAR threshold</strong> (1 % of validation-normal samples above it, used for the benchmark) and the <strong>operating threshold</strong> (minimum expected cost on the validation runs, used for alarms). With the reference cost mix, where a missed fault costs 50× a false alarm, the operating threshold sits well below the FAR threshold on purpose.</p>
+        <p>RUL is a ranking of urgency: <code>p50</code> is the median minutes until the end of the fault episode, <code>p10</code>/<code>p90</code> an 80 % interval calibrated on validation. On the synthetic benchmark it is a function of time since onset, not a physical time-to-failure.</p>
+      </section>
+      <section id="g4">
+        <h3>4 · Drift</h3>
+        <p>Each sensor's distribution in a batch is compared with the training-normal reference (Population Stability Index). Thresholds sit per sensor above the plant's own run-to-run noise floor, measured leave-one-run-out at training time.</p>
+        <p><strong>stable</strong> the data is what the model was trained on · <strong>watch</strong> investigate (recalibration, new operating point) · <strong>alert</strong> do not trust alarms driven by those sensors until retrained. A batch containing a real fault also shows as drift, so check on known-normal periods.</p>
+      </section>
+      <section id="g5">
+        <h3>5 · Score your own data</h3>
+<pre class="code">pip install "sensorlab @ git+https://github.com/Gemmagf/sensorlab"
+sensorlab train                                    # or use your own models/pipeline.joblib
+sensorlab score --input batch.csv --output scored.csv --drift
+sensorlab serve                                    # this page with live upload-and-score</pre>
+        <p><strong>Input:</strong> one row per sample in time order, the training sensor columns (<code>XMEAS(1)</code> … <code>XMV(11)</code>; <code>xmeas_1</code> style is accepted), an optional <code>run_id</code> column with the rows of one run contiguous, no missing values.</p>
+        <p><strong>Output:</strong> your rows plus <code>score_&lt;detector&gt;</code>, <code>primary_score</code>, <code>threshold</code>, <code>above_threshold</code>, <code>alarm</code>, <code>fault_id_pred</code>, <code>fault_name_pred</code>, <code>fault_confidence</code>, <code>rul_p10_min</code>, <code>rul_p50_min</code>, <code>rul_p90_min</code>, <code>action</code>.</p>
+      </section>
+      <section id="g6">
+        <h3>6 · Bringing your own plant</h3>
+        <p>Only the loader knows about the data source. Return a <code>TEPDataset</code> (sensor matrix, contiguous run ids, per-run onsets and fault labels), call <code>validate()</code>, and train the pipeline on it. Decide up front the sample interval, how many normal runs you have (detectors and the drift reference learn from those only) and the cost mix.</p>
+        <p>Full details: the <a href="https://github.com/Gemmagf/sensorlab/blob/main/docs/guide.md">user guide</a> (install, CLI, Python API, FAQ) and the <a href="https://github.com/Gemmagf/sensorlab/blob/main/docs/runbook.md">operations runbook</a> (what to do when a gate fails or drift alerts, retraining cadence).</p>
+      </section>
+    </div>
+  </dialog>
   <div id="tooltip" class="tooltip" hidden></div>
   <script src="static/app.js"></script>
 </body>

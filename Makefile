@@ -36,12 +36,12 @@ test:
 	$(BIN)/pytest -v
 
 lint:
-	$(BIN)/ruff check src tests scripts app
-	$(BIN)/ruff format --check src tests scripts app
+	$(BIN)/ruff check src tests scripts
+	$(BIN)/ruff format --check src tests scripts
 
 format:
-	$(BIN)/ruff check --fix src tests scripts app
-	$(BIN)/ruff format src tests scripts app
+	$(BIN)/ruff check --fix src tests scripts
+	$(BIN)/ruff format src tests scripts
 
 train:
 	$(BIN)/sensorlab train --data synthetic

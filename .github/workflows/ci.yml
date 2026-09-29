@@ -33,8 +33,8 @@ jobs:
 
       - name: Lint (ruff)
         run: |
-          ruff check src tests scripts app
-          ruff format --check src tests scripts app
+          ruff check src tests scripts
+          ruff format --check src tests scripts
 
       - name: Test (pytest)
         run: pytest -v --cov=src/sensorlab --cov-report=term-missing
