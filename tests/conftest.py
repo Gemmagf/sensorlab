@@ -7,21 +7,12 @@ should construct its own ``SyntheticTEPConfig``.
 
 from __future__ import annotations
 
-# Must run before torch / xgboost are imported. PyTorch and XGBoost each ship
-# their own libomp on macOS arm64 — loading both into the same process and
-# allowing OpenMP threads to interleave causes XGBoost's DMatrix construction
-# to segfault. Set the env var AND force xgboost to load first so its libomp
-# wins. Both safeguards are needed; one alone is not enough.
-import os
-
-os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-
 import numpy as np
 import pytest
-import torch  # noqa: F401
-import xgboost  # noqa: F401  — must precede torch
 
+# Importing the package first applies the platform shims (macOS libomp
+# ordering, thread caps) before torch / xgboost are loaded anywhere else.
+import sensorlab  # noqa: F401
 from sensorlab.data import (
     Standardizer,
     SyntheticTEPConfig,
@@ -29,6 +20,7 @@ from sensorlab.data import (
     sliding_windows,
     train_val_test_split_by_run,
 )
+from sensorlab.pipeline import MonitoringPipeline, PipelineConfig
 
 
 @pytest.fixture(scope="session")
@@ -68,6 +60,30 @@ def tiny_windows(tiny_dataset, tiny_standardized):
         tiny_standardized["X"], tiny_dataset.run_id, window=12, stride=2
     )
     return {"windows": windows, "end_idx": end_idx}
+
+
+@pytest.fixture(scope="session")
+def fast_pipeline_config() -> PipelineConfig:
+    return PipelineConfig(
+        window=12,
+        stride=2,
+        ae_epochs=2,
+        ae_hidden=8,
+        ae_latent=4,
+        iforest_estimators=30,
+        xgb_estimators=20,
+        xgb_max_depth=3,
+        rul_estimators=20,
+        rul_max_depth=2,
+        seed=0,
+    )
+
+
+@pytest.fixture(scope="session")
+def fitted_pipeline(tiny_dataset, tiny_splits, fast_pipeline_config):
+    return MonitoringPipeline(fast_pipeline_config).fit(
+        tiny_dataset, tiny_splits["train"], tiny_splits["val"]
+    )
 
 
 @pytest.fixture

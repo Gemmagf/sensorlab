@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the five narrative notebooks under ``notebooks/``.
+"""Generate the six narrative notebooks under ``notebooks/``.
 
 Building them in code keeps style and import boilerplate consistent and makes
 it trivial to regenerate after a change to the library.
@@ -133,10 +133,10 @@ def nb02_detection() -> list:
         new_code_cell(
             dedent("""
             from sensorlab.data import (load_dataset, SyntheticTEPConfig, Standardizer,
-                                       sliding_windows, train_val_test_split_by_run)
-            from sensorlab.detection import (PCAMonitor, IForestDetector, LSTMAutoencoder,
-                                            auroc, threshold_at_far, true_positive_rate,
-                                            detection_delay)
+                                       sliding_windows, train_val_test_split_by_run,
+                                       windows_to_per_sample)
+            from sensorlab.detection import PCAMonitor, IForestDetector, LSTMAutoencoder
+            from sensorlab.evaluation import evaluate_detector
 
             cfg = SyntheticTEPConfig(n_normal_runs=12, n_runs_per_fault=4, fault_run_minutes=480, seed=0)
             ds = load_dataset("synthetic", cfg=cfg)
@@ -161,31 +161,21 @@ def nb02_detection() -> list:
         new_code_cell(
             dedent("""
             scores = {"PCA-T2Q": spc.score(Xz), "IForest": ifo.score(Xz)}
-            s_ae_win = ae.score(windows)
-            s_ae = np.zeros(ds.n_samples, dtype=np.float32); s_ae[end_idx] = s_ae_win
-            # Forward-fill within each run for consecutive-above-threshold logic
-            for r in np.unique(ds.run_id):
-                m = np.where(ds.run_id == r)[0]
-                sub = s_ae[m]; last = 0.0
-                for i, v in enumerate(sub):
-                    if v == 0 and last > 0: sub[i] = last
-                    else: last = v
-                s_ae[m] = sub
-            scores["LSTM-AE"] = s_ae
+            # Window scores are lifted to the sample axis by the same helper the pipeline uses,
+            # so delays are measured in real minutes and onsets line up.
+            scores["LSTM-AE"] = windows_to_per_sample(ae.score(windows), end_idx, ds.run_id, ds.n_samples)
 
             from sklearn.metrics import roc_curve
             curves = {}; rows = []
             for name, s in scores.items():
                 fpr, tpr, _ = roc_curve(ds.is_anomaly[test_m], s[test_m])
                 curves[name] = (fpr, tpr)
-                thr = threshold_at_far(s[normal_val], far=0.01)
-                d = detection_delay(s, ds.run_id, ds.run_onsets, ds.run_fault_id, thr,
-                                    samples_to_minutes=ds.sample_minutes)
-                rows.append({"detector": name,
-                            "AUROC": round(auroc(s[test_m], ds.is_anomaly[test_m]), 3),
-                            "TPR@FAR=1%": round(true_positive_rate(s[test_m], ds.is_anomaly[test_m], thr), 3),
-                            "frac_detected": round(d["fraction_detected"], 3),
-                            "median_delay_min": round(d["median_min"], 1)})
+                # threshold on validation-normal, every metric on the held-out test runs
+                r = evaluate_detector(name, s, ds, normal_val, test_m, far_target=0.01)
+                rows.append({"detector": name, "AUROC": round(r.auroc, 3),
+                            "TPR@FAR=1%": round(r.tpr_at_far, 3), "FAR_observed": round(r.far_observed, 3),
+                            "frac_detected": round(r.fraction_detected, 2),
+                            "median_delay_min": round(r.median_delay_min, 1)})
             pd.DataFrame(rows).set_index("detector")
         """).strip()
         ),
@@ -201,14 +191,14 @@ def nb02_detection() -> list:
             from sensorlab.viz import plot_detection_scores
             run = int(np.where(ds.run_fault_id == 4)[0][0])
             mask = ds.run_id == run
-            thr = threshold_at_far(scores["IForest"][normal_val], far=0.01)
+            thr = evaluate_detector("IForest", scores["IForest"], ds, normal_val, test_m).threshold
             ax = plot_detection_scores(scores["IForest"][mask], is_anomaly=ds.is_anomaly[mask],
                                        threshold=thr, title=f"IForest on run {run} (F04)")
             plt.show()
         """).strip()
         ),
         new_markdown_cell(
-            "**Takeaways**\n\n- The classical T²/Q baseline is honest but conservative — slower to fire on subtle faults.\n- IsolationForest catches sharp regime changes quickly.\n- LSTM-AE achieves the highest AUROC by modelling the *temporal* dependence — gain comes from sequence-level reconstruction error.\n- All three remain useful: they don't disagree on easy faults, they disagree on the hard ones — a candidate for an ensemble in production."
+            "**Takeaways**\n\n- The classical T²/Q baseline is honest but conservative — slower to fire on subtle faults.\n- IsolationForest catches sharp regime changes quickly.\n- LSTM-AE achieves the highest AUROC by modelling the *temporal* dependence — gain comes from sequence-level reconstruction error.\n- The `FAR_observed` column is the calibration check: a threshold set on validation-normal should reproduce roughly the 1 % target on test.\n- All three remain useful: they don't disagree on easy faults, they disagree on the hard ones — a candidate for an ensemble in production."
         ),
     ]
 
@@ -234,7 +224,10 @@ def nb03_diagnosis() -> list:
             Xz = sc.transform(ds.X)
             windows, _, end_idx = sliding_windows(Xz, ds.run_id, window=20, stride=2)
             feats, fnames = window_features(windows, ds.sensor_names)
-            labels = ds.fault_id[end_idx]; in_train = train_m[end_idx]; in_test = test_m[end_idx]
+            # Target = the fault *active at the window end*. Pre-onset samples of a faulty run are
+            # nominal; labelling them with the run's fault id (ds.fault_id) would ask the model to
+            # separate identical distributions and silently caps accuracy (~0.57 vs ~0.70 here).
+            labels = ds.active_fault_id[end_idx]; in_train = train_m[end_idx]; in_test = test_m[end_idx]
         """).strip()
         ),
         new_markdown_cell("## Train"),
@@ -282,7 +275,7 @@ def nb03_diagnosis() -> list:
         """).strip()
         ),
         new_markdown_cell(
-            "**Takeaways**\n\n- Step / drift faults are diagnosed reliably; noise-increase and intermittent faults are harder (they overlap in sensor signature).\n- SHAP gives a single sensor (or two) per fault — actionable for a process engineer.\n- A future improvement: a hierarchical classifier (fault family first, then sub-type) for the harder pairs."
+            "**Takeaways**\n\n- Getting the *label* right mattered more than any hyper-parameter: switching from the run-level scenario id to the fault active at time t moved accuracy from ~0.57 to ~0.70.\n- Step / drift faults are diagnosed reliably; noise-increase and intermittent faults are harder (they overlap in sensor signature — several synthetic faults share the same mechanic).\n- SHAP gives a single sensor (or two) per fault — actionable for a process engineer.\n- A future improvement: a hierarchical classifier (fault family first, then sub-type) for the harder pairs."
         ),
     ]
 
@@ -312,6 +305,7 @@ def nb04_rul() -> list:
                                           samples_to_minutes=ds.sample_minutes, cap_minutes=600)
             rul_w = rul[end_idx]; mask_w = mask[end_idx]
             tr = train_m[end_idx] & mask_w
+            ca = val_m[end_idx]   & mask_w   # calibration set for the conformal margin
             te = test_m[end_idx]  & mask_w
         """).strip()
         ),
@@ -319,11 +313,14 @@ def nb04_rul() -> list:
         new_code_cell(
             dedent("""
             qr = QuantileRUL(n_estimators=200, max_depth=4).fit(feats[tr], rul_w[tr])
-            lo, med, hi = qr.predict_interval(feats[te])
             y = rul_w[te]
-            print(f"MAE:           {qr.mae(y, med):.1f} min")
-            print(f"80% coverage:  {qr.coverage(y, lo, hi):.2%}")
-            print(f"pinball@0.5:   {qr.pinball_loss(y, med, 0.5):.2f}")
+            lo_raw, med, hi_raw = qr.predict_interval(feats[te])
+            qr.calibrate(feats[ca], rul_w[ca])          # split-conformal margin on validation
+            lo, med, hi = qr.predict_interval(feats[te])
+            print(f"MAE:                        {qr.mae(y, med):.1f} min")
+            print(f"80% coverage (raw GBM):     {qr.coverage(y, lo_raw, hi_raw):.2%}")
+            print(f"80% coverage (conformal):   {qr.coverage(y, lo, hi):.2%}   margin={qr.conformal_margin_:.0f} min")
+            print(f"pinball@0.5:                {qr.pinball_loss(y, med, 0.5):.2f}")
         """).strip()
         ),
         new_markdown_cell("## Calibration plot"),
@@ -339,7 +336,7 @@ def nb04_rul() -> list:
         """).strip()
         ),
         new_markdown_cell(
-            "**Takeaways**\n\n- Median predictions track the trend well.\n- The 80% prediction interval covers ~70% of test cases — slightly under-covered, typical of vanilla quantile GBMs. A conformal-prediction wrapper would tighten this.\n- Best signal is on drift/stick faults; abrupt step faults give very short RULs that the model treats as outliers."
+            "**Takeaways**\n\n- Median predictions track the trend well; the MAE is ~20 % of the run length — good for *ranking* runs by urgency, not for hard service-level promises.\n- The raw 80% interval under-covers (typical of quantile GBMs). A **split-conformal margin** fitted on the validation runs restores nominal coverage with no retraining — and is what the shipped pipeline uses.\n- On the synthetic benchmark the target is time-until-end-of-run with a fixed onset, i.e. a deterministic function of time since onset; treat the numbers as a property of the *features*, not as a time-to-failure guarantee."
         ),
     ]
 
@@ -377,7 +374,7 @@ def nb05_decision() -> list:
 
             best = optimal_threshold(scores[test_m], ds.run_id[test_m], ds.run_onsets, ds.run_fault_id,
                                      cost=cost, n_grid=60, samples_to_minutes=ds.sample_minutes)
-            print(f"optimum thr={best.threshold:.3f}  expected_cost={best.expected_cost:.0f} CHF")
+            print(f"oracle optimum on test: thr={best.threshold:.3f}  expected_cost={best.expected_cost:.0f} CHF")
             print(f"   FA={best.false_alarms}  missed={best.missed_faults}  delay={best.mean_delay_min:.1f} min")
         """).strip()
         ),
@@ -400,7 +397,115 @@ def nb05_decision() -> list:
         """).strip()
         ),
         new_markdown_cell(
-            "**Takeaways**\n\n- A detector + a threshold isn't a complete decision; it must be paired with a cost model the business owns.\n- The optimum threshold shifts predictably: when false alarms are cheap, lower the bar; when missed faults are expensive, lower the bar further.\n- The Streamlit dashboard (`make app`) lets a process engineer slide the cost knobs and read the new optimum in real time."
+            "**Takeaways**\n\n- A detector + a threshold isn't a complete decision; it must be paired with a cost model the business owns.\n- The optimum threshold shifts predictably: when false alarms are cheap, lower the bar; when missed faults are expensive, lower the bar further.\n- The curves here are *oracle* optima on the test runs. The shipped pipeline picks its operating threshold on the **validation** runs and reports the resulting cost on test — the gap between the two is the honest price of not peeking (notebook 06).\n- The governance dashboard (`make serve`, section 05) lets a process engineer change the cost knobs and read the new optimum against the shipped threshold."
+        ),
+    ]
+
+
+def nb06_pipeline() -> list:
+    return [
+        new_markdown_cell(
+            "# 06 · The deployable artefact — `MonitoringPipeline`\n\n"
+            "Notebooks 02-05 explore each layer in isolation. What ships to the plant is **one object** "
+            "that bundles the scaler, the detectors, the classifier, the RUL head, the calibrated "
+            "thresholds, the cost model and a drift monitor. This notebook fits it, evaluates it on "
+            "held-out runs, serialises it, and scores a fresh batch — the same path `sensorlab train` "
+            "and `sensorlab score` take from the command line."
+        ),
+        new_code_cell(PREAMBLE),
+        new_code_cell(
+            dedent("""
+            from sensorlab.data import load_dataset, SyntheticTEPConfig, train_val_test_split_by_run
+            from sensorlab.pipeline import MonitoringPipeline, PipelineConfig
+            from sensorlab.decision import CostModel
+
+            cfg = SyntheticTEPConfig(n_normal_runs=12, n_runs_per_fault=4, fault_run_minutes=480, seed=0)
+            ds = load_dataset("synthetic", cfg=cfg)
+            train_m, val_m, test_m = train_val_test_split_by_run(ds, seed=0)
+
+            pipe = MonitoringPipeline(PipelineConfig(
+                ae_epochs=15,
+                cost=CostModel(false_alarm_cost=100, missed_fault_cost=5000, delay_cost_per_min=50),
+                intervene_horizon_min=120,
+            )).fit(ds, train_m, val_m)
+            print("primary detector:", pipe.primary_detector_)
+            print("FAR thresholds:", {k: round(v, 3) for k, v in pipe.far_thresholds_.items()})
+            print("operating thresholds (cost-optimal on validation):",
+                  {k: round(v, 3) for k, v in pipe.decision_thresholds_.items()})
+        """).strip()
+        ),
+        new_markdown_cell(
+            "## Held-out evaluation of every layer\n\n"
+            "Thresholds were fixed on validation; everything below is measured on the test runs only."
+        ),
+        new_code_cell(
+            dedent("""
+            res = pipe.evaluate(ds, test_m, shap_samples=0)
+            det = pd.DataFrame(res["detection"]).T[["auroc", "tpr_at_far", "far_observed", "fraction_detected", "median_delay_min"]]
+            dec = pd.DataFrame(res["decision"]).T[["threshold", "expected_cost", "false_alarms", "missed_faults", "mean_delay_min"]]
+            display(det.round(3)); display(dec.round(2))
+            print("diagnosis:", {k: round(v, 3) for k, v in res["diagnosis"].items() if isinstance(v, float)})
+            print("rul:      ", {k: round(v, 2) for k, v in res["rul"].items() if isinstance(v, float)})
+            print("actions:  ", res["actions"])
+        """).strip()
+        ),
+        new_markdown_cell(
+            "## Scoring a batch — what the operator sees\n\n"
+            "One row per sample: scores, *confirmed* alarm (three consecutive samples above the operating "
+            "threshold), diagnosed fault, RUL interval and a recommended action."
+        ),
+        new_code_cell(
+            dedent("""
+            test_runs = np.unique(ds.run_id[test_m])
+            run = int([r for r in test_runs if ds.run_fault_id[r] == 13][0])   # a slow-drift fault in the test split
+            m = ds.run_id == run
+            out = pipe.predict(ds.X[m], ds.run_id[m])
+            onset = int(ds.run_onsets[run])
+            first = out.index[out["alarm"] & (out.index >= onset)].min()
+            print(f"run {run} ({ds.fault_names[13]}): onset at {onset*3} min, first confirmed alarm at {first*3} min")
+            out.loc[[onset - 2, onset, first, first + 10, len(out) - 1],
+                    ["t_minutes", "primary_score", "alarm", "fault_name_pred", "fault_confidence",
+                     "rul_p10_min", "rul_p50_min", "rul_p90_min", "action"]]
+        """).strip()
+        ),
+        new_code_cell(
+            dedent("""
+            fig, ax = plt.subplots(figsize=(10, 3.5))
+            ax.plot(out["t_minutes"], out["primary_score"], color="#1f2937", lw=1, label=f"{pipe.primary_detector_} score")
+            ax.axhline(out["threshold"].iloc[0], color="#f59e0b", ls="--", label="operating threshold")
+            ax.axvspan(onset * 3, out["t_minutes"].iloc[-1], color="#ef4444", alpha=0.08, label="fault active")
+            colours = {"wait": "#3b82f6", "investigate": "#f59e0b", "schedule_maintenance": "#10b981", "intervene_now": "#ef4444"}
+            for action, g in out.groupby("action"):
+                ax.scatter(g["t_minutes"], g["primary_score"], s=8, color=colours[action], label=f"action = {action}")
+            ax.set_xlabel("minutes"); ax.set_ylabel("score"); ax.legend(fontsize=7, ncol=3)
+            ax.set_title("Recommended action along a slow-drift run"); plt.show()
+        """).strip()
+        ),
+        new_markdown_cell(
+            "## Save, reload, and check for drift\n\n"
+            "`save` writes the pipeline plus a JSON manifest (config, thresholds, sensor layout, fit report). "
+            "The drift monitor stores a compact reference of training-normal marginals and reports a "
+            "per-sensor PSI on any new batch — the first thing to check when alarms start looking odd."
+        ),
+        new_code_cell(
+            dedent("""
+            import tempfile, json, pathlib
+            tmp = pathlib.Path(tempfile.mkdtemp())
+            path = pipe.save(tmp / "pipeline.joblib")
+            reloaded = MonitoringPipeline.load(path)
+            manifest = json.loads(path.with_suffix(".manifest.json").read_text())
+            print("manifest keys:", list(manifest))
+            assert reloaded.predict(ds.X[m], ds.run_id[m]).equals(out)
+
+            normal_test = ds.run_mask([r for r in np.unique(ds.run_id[test_m]) if ds.run_fault_id[r] == 0])
+            print("drift on normal test runs:", reloaded.check_drift(ds.X[normal_test]).status)
+            recal = ds.X[normal_test].copy(); recal[:, 3] += 2 * ds.X[:, 3].std()   # sensor 4 recalibrated
+            rep = reloaded.check_drift(recal)
+            print("after recalibrating XMEAS(4):", rep.status, "→ alert on", rep.alert)
+        """).strip()
+        ),
+        new_markdown_cell(
+            "**Takeaways**\n\n- One fitted object + one manifest is the hand-over unit; `sensorlab score --input batch.csv --drift` runs it in a scheduled job and `sensorlab serve` exposes the same path as an audited HTTP API behind a governance dashboard.\n- The operating threshold is chosen on validation at the business's cost mix, and its cost is reported on test — no peeking.\n- The action column is the contract with operations: `wait` / `investigate` / `schedule_maintenance` / `intervene_now`, decided by the confirmed alarm, the diagnosed fault and the RUL median against a horizon the plant sets.\n- Drift monitoring answers the question every deployment eventually gets: *is the model wrong, or did the plant change?*"
         ),
     ]
 
@@ -411,6 +516,7 @@ def main() -> None:
     write_notebook("03_diagnosis.ipynb", nb03_diagnosis())
     write_notebook("04_rul.ipynb", nb04_rul())
     write_notebook("05_decision_layer.ipynb", nb05_decision())
+    write_notebook("06_pipeline.ipynb", nb06_pipeline())
 
 
 if __name__ == "__main__":

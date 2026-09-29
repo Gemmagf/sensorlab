@@ -3,7 +3,7 @@ import pytest
 
 from sensorlab.config import TEP
 from sensorlab.data import SyntheticTEPConfig, generate_synthetic_dataset
-from sensorlab.data.synthetic import FAULT_CATALOGUE
+from sensorlab.data.synthetic import FAULT_CATALOGUE, SYNTHETIC_N_SENSORS
 
 
 def test_fault_catalogue_has_21_entries():
@@ -14,7 +14,7 @@ def test_generator_returns_expected_shape(tiny_cfg):
     sim = generate_synthetic_dataset(tiny_cfg)
     n_total_runs = tiny_cfg.n_normal_runs + TEP.n_fault_types * tiny_cfg.n_runs_per_fault
     samples_per_run = int(tiny_cfg.fault_run_minutes / tiny_cfg.sample_minutes)
-    assert sim.X.shape == (n_total_runs * samples_per_run, TEP.n_total)
+    assert sim.X.shape == (n_total_runs * samples_per_run, SYNTHETIC_N_SENSORS)
     assert sim.fault_id.shape == (sim.X.shape[0],)
     assert sim.run_id.shape == (sim.X.shape[0],)
 

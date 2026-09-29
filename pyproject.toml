@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sensorlab"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fault detection, diagnosis & remaining-useful-life on the Tennessee Eastman chemical process benchmark"
 readme = "README.md"
 license = { text = "MIT" }
@@ -41,16 +41,23 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-app = ["streamlit>=1.30", "plotly>=5.18"]
+serve = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9", "httpx>=0.27"]
 survival = ["lifelines>=0.27"]
+real = ["pyreadr>=0.5", "pyarrow>=14"]
 dev = [
   "pytest>=7.4",
   "pytest-cov>=4.1",
   "ruff>=0.4",
+  "fastapi>=0.110",
+  "httpx>=0.27",
+  "python-multipart>=0.0.9",
   "ipykernel>=6.27",
   "jupyter>=1.0",
   "nbformat>=5.9",
 ]
+
+[project.scripts]
+sensorlab = "sensorlab.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/Gemmagf/sensorlab"
@@ -58,6 +65,9 @@ Issues = "https://github.com/Gemmagf/sensorlab/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sensorlab"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/sensorlab/server/static" = "sensorlab/server/static"
 
 [tool.ruff]
 line-length = 100

@@ -54,7 +54,8 @@ def test_quantile_rul_fit_predict(tiny_dataset, tiny_windows, tiny_splits):
     qr = QuantileRUL(n_estimators=30, max_depth=2).fit(feats[train], rul_w[train])
     lo, med, hi = qr.predict_interval(feats[test])
     assert lo.shape == med.shape == hi.shape == (test.sum(),)
-    assert (lo <= med + 1e-6).all() or (med <= hi + 1e-6).all()  # quantile order roughly holds
+    # quantile order should hold for the large majority of samples
+    assert ((lo <= med + 1e-6) & (med <= hi + 1e-6)).mean() > 0.9
 
 
 def test_quantile_rul_metric_helpers():
@@ -65,3 +66,28 @@ def test_quantile_rul_metric_helpers():
     assert QuantileRUL.coverage(y, y + 1, y + 2) == 0.0
     pb = QuantileRUL.pinball_loss(y, y_pred, q=0.5)
     assert pb >= 0
+
+
+def test_conformal_calibration_lifts_coverage_to_nominal(rng):
+    # heteroscedastic toy problem where raw quantile GBMs under-cover
+    n = 3000
+    X = rng.uniform(0, 10, (n, 2))
+    y = X[:, 0] * 10 + rng.standard_normal(n) * (2 + X[:, 1] * 3)
+    tr, cal, te = slice(0, 1500), slice(1500, 2200), slice(2200, n)
+    qr = QuantileRUL(n_estimators=50, max_depth=3).fit(X[tr], y[tr])
+    lo_raw, _, hi_raw = qr.predict_interval(X[te])
+    qr.calibrate(X[cal], y[cal])
+    assert qr.conformal_margin_ is not None and qr.n_calibration_ == 700
+    lo, _, hi = qr.predict_interval(X[te])
+    cov = QuantileRUL.coverage(y[te], lo, hi)
+    assert 0.74 <= cov <= 0.88
+    # the margin (positive or negative) is applied symmetrically
+    np.testing.assert_allclose((hi - lo) - (hi_raw - lo_raw), 2 * qr.conformal_margin_)
+
+
+def test_conformal_calibration_skipped_on_tiny_sets(rng):
+    X = rng.standard_normal((60, 2))
+    y = X[:, 0]
+    qr = QuantileRUL(n_estimators=10, max_depth=2).fit(X, y)
+    qr.calibrate(X[:5], y[:5])
+    assert qr.conformal_margin_ is None

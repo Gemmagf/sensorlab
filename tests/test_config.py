@@ -11,7 +11,7 @@ from sensorlab.config import (
 
 
 def test_tep_spec_constants():
-    assert TEP.n_xmeas + TEP.n_xmv == TEP.n_total
+    assert TEP.n_xmeas + TEP.n_xmv == TEP.n_total == 52
     assert TEP.n_fault_types == 21
     assert TEP.sample_minutes > 0
 

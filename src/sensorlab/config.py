@@ -15,18 +15,26 @@ ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
 
 @dataclass(frozen=True)
 class TEPSpec:
-    """Tennessee Eastman process specification.
+    """Tennessee Eastman process specification (the *real* benchmark).
 
-    Channel count and fault catalogue follow the Downs & Vogel (1993) /
-    Bathelt et al. (2015) conventions used throughout the literature.
+    Channel counts follow Downs & Vogel (1993) as distributed in the Rieth et
+    al. (2017) release: 41 process measurements (XMEAS) and 11 manipulated
+    variables (XMV) — 52 channels sampled every 3 minutes. The synthetic
+    generator uses a smaller 33-channel layout; see
+    :class:`sensorlab.data.synthetic.SyntheticTEPConfig`.
+
+    ``fault_onset_sample_*`` encode the Rieth convention: faults are injected
+    after 1 h (sample 20) in the training files and after 8 h (sample 160) in
+    the testing files.
     """
 
-    n_xmeas: int = 22
+    n_xmeas: int = 41
     n_xmv: int = 11
-    n_total: int = 33
     n_fault_types: int = 21
     sample_minutes: float = 3.0
     nominal_steady_minutes: int = 60
+    fault_onset_sample_train: int = 20
+    fault_onset_sample_test: int = 160
     fault_names: tuple[str, ...] = field(
         default_factory=lambda: (
             "Normal",
@@ -53,6 +61,10 @@ class TEPSpec:
             "F21_valve_position_const",
         )
     )
+
+    @property
+    def n_total(self) -> int:
+        return self.n_xmeas + self.n_xmv
 
 
 TEP = TEPSpec()
