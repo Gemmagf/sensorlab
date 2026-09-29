@@ -15,8 +15,6 @@
   restarts for every fault and file, and faults start at sample 20 (train) or 160 (test).
   The loader now matches columns case-insensitively, builds unique run ids from
   `(split, faultNumber, simulationRun)` and applies the right onset. Covered by tests.
-- **Streamlit cache.** Changing any dataset slider other than the seed crashed the app
-  (splits cached on the seed only). Every cached step is keyed on all of its inputs.
 - **Evaluation leakage / inconsistency.** Detection delay and decision costs were computed on
   train+val+test; AUROC on test only. Every reported number is now on held-out test runs, with
   thresholds fixed on validation. The README's "48 test runs" was 24.
@@ -36,9 +34,16 @@
 - Conformal (CQR) calibration of the RUL interval on validation data; raw and calibrated coverage
   are both reported. RUL head switched to `HistGradientBoostingRegressor` (40× faster fit).
 - `TEPDataset.validate()`, `active_fault_id`, `run_mask()`; `dataset_from_rieth_frame()`.
-- Notebook 06 (end-to-end pipeline), Streamlit **Operate** tab (per-run outcomes, scored CSV
-  download, drift simulation, manifest), CI smoke test of the CLI, `docs/runbook.md`.
-- 102 tests (was 65).
+- `sensorlab serve` + `sensorlab.server`: FastAPI scoring API (`/api/score`, `/api/health`,
+  `/api/drift`, …) and a static **governance dashboard** (acceptance gates, ownership,
+  benchmark, cost curve, run inspector, SHAP, drift simulator, upload-and-score, audit log) in
+  plain HTML/SVG. `Dockerfile` with the reference model trained at build time.
+- Notebook 06 (end-to-end pipeline), CI smoke test of the CLI, `docs/runbook.md`.
+- 109 tests (was 65).
+
+### Removed
+- The Streamlit app (`app/streamlit_app.py`, `requirements.txt`, `runtime.txt`). The dashboard
+  is now served by the same process as the API and needs no third-party UI framework.
 
 ## 0.1.0
 

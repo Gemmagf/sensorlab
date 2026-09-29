@@ -18,7 +18,10 @@ major/minor mismatch as "retrain".
 ## 2. Scoring a batch
 
 ```bash
+# CLI
 sensorlab score --model models/pipeline.joblib --input batch.csv --output scored.csv --drift
+# HTTP (same code path, audited in the dashboard's section 10)
+curl -F file=@batch.csv "http://<host>:8000/api/score?format=csv" > scored.csv
 ```
 
 Input: one row per sample, the training sensor columns (`XMEAS(i)` / `XMV(j)`; Rieth-style
@@ -46,6 +49,14 @@ alarm and diagnosed fault == Normal             -> investigate      (detector fi
 alarm, fault, RUL p50 >  intervene_horizon_min  -> schedule_maintenance
 alarm, fault, RUL p50 <= intervene_horizon_min  -> intervene_now
 ```
+
+### The governance dashboard
+
+`sensorlab serve` (or the container) serves the dashboard on `/` and the API on `/api`
+(`/api/docs` is the OpenAPI page). Sections map to this runbook: **02 Acceptance** is §5's
+release criteria evaluated on the held-out runs at start-up, **03 Ownership** is §3,
+**08 Drift** is §4 step 1, **09/10** are §2 with its audit trail. `/api/health` returns
+`degraded` when any acceptance gate fails; wire it to your monitoring.
 
 ## 3. Who owns which number
 

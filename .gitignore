@@ -37,6 +37,7 @@ data/interim/
 models/
 artifacts/*
 !artifacts/results.json
+
 runs/
 *.pt
 *.pth
@@ -54,8 +55,6 @@ desktop.ini
 *.swp
 *.swo
 
-# Streamlit
-.streamlit/secrets.toml
 
 # Environment / secrets
 .env

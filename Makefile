@@ -1,4 +1,4 @@
-.PHONY: help install test lint format clean train evaluate score app notebook notebooks download-tep
+.PHONY: help install test lint format clean train evaluate score serve docker notebook notebooks download-tep
 
 VENV     := .venv
 PYTHON   := python3.11
@@ -10,7 +10,7 @@ TORCH_CPU := --extra-index-url https://download.pytorch.org/whl/cpu
 help:
 	@echo "sensorlab — common commands"
 	@echo ""
-	@echo "  make install        Create .venv and install package + app/dev extras (CPU torch)"
+	@echo "  make install        Create .venv and install package + serve/dev extras (CPU torch)"
 	@echo "  make test           Run pytest"
 	@echo "  make lint           ruff check + format check"
 	@echo "  make format         Apply ruff format & autofixes"
@@ -20,7 +20,8 @@ help:
 	@echo "  make download-tep   Fetch the real Tennessee Eastman dataset"
 	@echo "  make notebook       Launch Jupyter notebook server"
 	@echo "  make notebooks      Regenerate and execute the narrative notebooks"
-	@echo "  make app            Launch the Streamlit dashboard"
+	@echo "  make serve          Governance dashboard + scoring API on http://127.0.0.1:8000"
+	@echo "  make docker         Build the container image (model trained at build time)"
 	@echo "  make clean          Remove build/test caches and virtualenv"
 
 $(BIN)/python:
@@ -28,7 +29,7 @@ $(BIN)/python:
 	$(PIP) install --upgrade pip wheel
 
 install: $(BIN)/python
-	$(PIP) install $(TORCH_CPU) -e ".[app,survival,dev]"
+	$(PIP) install $(TORCH_CPU) -e ".[serve,survival,dev]"
 
 test:
 	$(BIN)/pytest -v
@@ -60,8 +61,11 @@ notebooks:
 	$(PY) scripts/build_notebooks.py
 	for nb in notebooks/0*.ipynb; do $(BIN)/jupyter nbconvert --to notebook --execute --inplace $$nb; done
 
-app:
-	$(BIN)/streamlit run app/streamlit_app.py
+serve:
+	$(BIN)/sensorlab serve --train-if-missing
+
+docker:
+	docker build -t sensorlab .
 
 clean:
 	rm -rf $(VENV) build dist *.egg-info .pytest_cache .ruff_cache .coverage htmlcov

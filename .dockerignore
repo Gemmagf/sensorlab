@@ -1,0 +1,10 @@
+.git
+.venv
+data/raw
+data/processed
+notebooks
+tests
+htmlcov
+.pytest_cache
+.ruff_cache
+*.egg-info

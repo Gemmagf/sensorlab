@@ -397,7 +397,7 @@ def nb05_decision() -> list:
         """).strip()
         ),
         new_markdown_cell(
-            "**Takeaways**\n\n- A detector + a threshold isn't a complete decision; it must be paired with a cost model the business owns.\n- The optimum threshold shifts predictably: when false alarms are cheap, lower the bar; when missed faults are expensive, lower the bar further.\n- The curves here are *oracle* optima on the test runs. The shipped pipeline picks its operating threshold on the **validation** runs and reports the resulting cost on test — the gap between the two is the honest price of not peeking (notebook 06).\n- The Streamlit dashboard (`make app`) lets a process engineer slide the cost knobs and read the new optimum in real time."
+            "**Takeaways**\n\n- A detector + a threshold isn't a complete decision; it must be paired with a cost model the business owns.\n- The optimum threshold shifts predictably: when false alarms are cheap, lower the bar; when missed faults are expensive, lower the bar further.\n- The curves here are *oracle* optima on the test runs. The shipped pipeline picks its operating threshold on the **validation** runs and reports the resulting cost on test — the gap between the two is the honest price of not peeking (notebook 06).\n- The governance dashboard (`make serve`, section 05) lets a process engineer change the cost knobs and read the new optimum against the shipped threshold."
         ),
     ]
 
@@ -505,7 +505,7 @@ def nb06_pipeline() -> list:
         """).strip()
         ),
         new_markdown_cell(
-            "**Takeaways**\n\n- One fitted object + one manifest is the hand-over unit; `sensorlab score --input batch.csv --drift` runs it in a scheduled job.\n- The operating threshold is chosen on validation at the business's cost mix, and its cost is reported on test — no peeking.\n- The action column is the contract with operations: `wait` / `investigate` / `schedule_maintenance` / `intervene_now`, decided by the confirmed alarm, the diagnosed fault and the RUL median against a horizon the plant sets.\n- Drift monitoring answers the question every deployment eventually gets: *is the model wrong, or did the plant change?*"
+            "**Takeaways**\n\n- One fitted object + one manifest is the hand-over unit; `sensorlab score --input batch.csv --drift` runs it in a scheduled job and `sensorlab serve` exposes the same path as an audited HTTP API behind a governance dashboard.\n- The operating threshold is chosen on validation at the business's cost mix, and its cost is reported on test — no peeking.\n- The action column is the contract with operations: `wait` / `investigate` / `schedule_maintenance` / `intervene_now`, decided by the confirmed alarm, the diagnosed fault and the RUL median against a horizon the plant sets.\n- Drift monitoring answers the question every deployment eventually gets: *is the model wrong, or did the plant change?*"
         ),
     ]
 

@@ -1,8 +1,9 @@
-"""Command-line interface: ``sensorlab train | evaluate | score | info``.
+"""Command-line interface: ``sensorlab train | evaluate | score | serve | info``.
 
 * ``train``     fit one pipeline, evaluate it on held-out runs, save model + results
 * ``evaluate``  the same experiment over several seeds, reporting mean ± std
 * ``score``     run a saved pipeline on a CSV/parquet of sensor rows (batch inference)
+* ``serve``     governance dashboard + scoring API (FastAPI) for a saved pipeline
 * ``info``      print the manifest of a saved pipeline
 
 Every command is deterministic given its arguments and writes machine-readable
@@ -72,6 +73,18 @@ def _add_model_args(p: argparse.ArgumentParser) -> None:
     g.add_argument("--fast", action="store_true", help="small models for smoke tests")
 
 
+def dataset_args(args: argparse.Namespace, seed: int) -> dict[str, Any]:
+    """The arguments that reproduce the dataset (stored in the model manifest)."""
+    return {
+        "data": args.data,
+        "seed": seed,
+        "n_runs_per_fault": args.n_runs_per_fault,
+        "n_normal_runs": args.n_normal_runs,
+        "fault_run_minutes": args.fault_run_minutes,
+        "real_root": None if args.real_root is None else str(args.real_root),
+    }
+
+
 def _load_data(args: argparse.Namespace, seed: int) -> TEPDataset:
     if args.data == "synthetic":
         cfg = SyntheticTEPConfig(
@@ -127,6 +140,7 @@ def run_experiment(
         np.unique(ds.run_id[test_m]).size,
     )
     pipe = MonitoringPipeline(_pipeline_config(args, seed)).fit(ds, train_m, val_m)
+    pipe.metadata_["dataset"] = dataset_args(args, seed)
     results = pipe.evaluate(ds, test_m, shap_samples=0 if args.fast else 300)
     results["seed"] = seed
     results["split"] = {
@@ -265,6 +279,32 @@ def cmd_score(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+    except ImportError:  # pragma: no cover
+        log.error("`sensorlab serve` needs the serve extra: pip install -e '.[serve]'")
+        return 2
+    from sensorlab.server import build_state, create_app
+
+    if not Path(args.model).exists():
+        if not args.train_if_missing:
+            log.error(
+                "no model at %s — run `sensorlab train` or pass --train-if-missing", args.model
+            )
+            return 2
+        log.warning(
+            "no model at %s — training one now (this is a demo path, not production)", args.model
+        )
+        train_args = build_parser().parse_args(["train", "--model-out", str(args.model)])
+        cmd_train(train_args)
+    state = build_state(model_path=args.model, results_path=args.results)
+    app = create_app(state)
+    log.info("serving governance dashboard on http://%s:%d", args.host, args.port)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    return 0
+
+
 def cmd_info(args: argparse.Namespace) -> int:
     pipe = MonitoringPipeline.load(args.model)
     print(json.dumps(pipe.manifest(), indent=2, default=str))
@@ -285,7 +325,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_model_args(t)
     t.add_argument("--seed", type=int, default=0)
     t.add_argument("--model-out", type=Path, default=MODELS_DIR / "pipeline.joblib")
-    t.add_argument("--results-out", type=Path, default=ARTIFACTS_DIR / "results.json")
+    t.add_argument(
+        "--results-out",
+        type=Path,
+        default=ARTIFACTS_DIR / "train_results.json",
+        help="single-seed report; the published multi-seed file is written by `evaluate`",
+    )
     t.add_argument("--no-save", action="store_true")
     t.set_defaults(func=cmd_train)
 
@@ -303,6 +348,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--run-col", default="run_id")
     s.add_argument("--drift", action="store_true", help="also report per-sensor PSI drift")
     s.set_defaults(func=cmd_score)
+
+    v = sub.add_parser("serve", help="serve the governance dashboard + scoring API")
+    v.add_argument("--model", type=Path, default=MODELS_DIR / "pipeline.joblib")
+    v.add_argument("--results", type=Path, default=ARTIFACTS_DIR / "results.json")
+    v.add_argument("--host", default="127.0.0.1")
+    v.add_argument("--port", type=int, default=8000)
+    v.add_argument("--train-if-missing", action="store_true")
+    v.set_defaults(func=cmd_serve)
 
     i = sub.add_parser("info", help="print the manifest of a saved pipeline")
     i.add_argument("--model", type=Path, default=MODELS_DIR / "pipeline.joblib")

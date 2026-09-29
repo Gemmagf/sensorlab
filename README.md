@@ -17,7 +17,8 @@ decision layer** turns all of that into one of four actions: `wait`, `investigat
 `schedule_maintenance`, `intervene_now`.
 
 The deliverable is not a notebook. It is one fitted object (`MonitoringPipeline`) with a
-manifest, a CLI (`sensorlab train | evaluate | score`), a drift monitor, a dashboard and an
+manifest, a CLI (`sensorlab train | evaluate | score | serve`), a drift monitor, a
+**governance dashboard + scoring API** (FastAPI, one container) and an
 [operations runbook](docs/runbook.md) — built the way a forward-deployed engineer hands a
 model to the people who will live with it.
 
@@ -27,16 +28,16 @@ model to the people who will live with it.
 
 ```bash
 make install                         # .venv (Python 3.11), CPU torch, app + dev extras
-make test                            # 102 tests, ~20 s
+make test                            # 109 tests, ~30 s
 
 sensorlab train                      # fit on synthetic TEP-like data, evaluate on held-out runs,
-                                     # -> models/pipeline.joblib (+ manifest), artifacts/results.json
+                                     # -> models/pipeline.joblib (+ manifest), artifacts/train_results.json
 sensorlab score --input batch.csv --output scored.csv --drift
                                      # one row per sample: scores, confirmed alarm, fault, RUL, action
 sensorlab evaluate --seeds 0 1 2     # the multi-seed numbers below (~1 min)
 
-make app                             # Streamlit: live runs, detector benchmark, SHAP, cost knobs,
-                                     # per-run outcomes, drift simulation
+make serve                           # governance dashboard + API on http://127.0.0.1:8000
+make docker && docker run -p 8000:8000 sensorlab   # same thing, one container
 make notebook                        # 01_eda … 06_pipeline
 ```
 
@@ -61,8 +62,8 @@ Real benchmark instead of the generator: `make download-tep` (~5 GB, Rieth et al
                  │  DriftMonitor (PSI vs train-normal) ─► stable / watch / alert       │
                  └──────────────────────────────────────────────────────────────────┘
                         ▲                     ▲                       ▲
-              sensorlab train         sensorlab score          Streamlit "Operate" tab
-              sensorlab evaluate      (batch CSV/parquet)      docs/runbook.md
+              sensorlab train         sensorlab score          sensorlab serve
+              sensorlab evaluate      (batch CSV/parquet)      governance dashboard + /api
 ```
 
 * **`sensorlab.data`** — `TEPDataset` is the contract every source satisfies (synthetic
@@ -77,7 +78,10 @@ Real benchmark instead of the generator: `make download-tep` (~5 GB, Rieth et al
   a dataclass, manifest as JSON.
 * **`sensorlab.evaluation`** — leakage guards (whole-run masks, validation-only thresholds) and
   multi-seed aggregation. **`sensorlab.monitoring`** — PSI drift. **`sensorlab.cli`** — the
-  four commands.
+  five commands.
+* **`sensorlab.server`** — FastAPI app: `/api/health`, `/api/overview`, `/api/runs`,
+  `/api/decision`, `/api/diagnosis`, `/api/drift`, `POST /api/score`, `/api/audit`, plus the
+  static governance dashboard (plain HTML/SVG, no build step, works offline).
 
 ## 🔬 Results
 
@@ -152,11 +156,27 @@ physical time-to-failure.
 ### End to end — what the operator receives on the test runs
 
 Confirmed-alarm precision 0.90 ± 0.05 and recall 0.71 ± 0.14 per sample; every faulty test run
-gets a confirmed alarm, and the per-run table in the **Operate** tab shows, for each run, the
-onset, the first alarm after it, the fault diagnosed at that moment, the RUL median and the
-final action.
+gets a confirmed alarm, and the per-run table in the dashboard (section 06) shows, for each
+run, the onset, the first alarm after it, the fault diagnosed at that moment, the RUL median
+and the final action.
 
 ## 🧭 Deployment story
+
+```bash
+sensorlab train                     # models/pipeline.joblib + pipeline.manifest.json
+sensorlab serve                     # http://127.0.0.1:8000  (dashboard)  ·  /api/docs (OpenAPI)
+curl -F file=@batch.csv "http://127.0.0.1:8000/api/score?format=csv" > scored.csv
+```
+
+![sensorlab governance dashboard](docs/dashboard.png)
+
+The dashboard is a **governance page, not a notebook in a browser**: model identity and
+health, the runbook's acceptance gates evaluated live (PASS/FAIL), who owns each knob and the
+value in force, the detection benchmark with the FAR calibration check, the cost curve with
+the shipped threshold against the oracle, every held-out run with its outcome and an inspector
+(traces, score vs threshold, RUL band, action timeline), SHAP driver sensors, PSI drift with a
+recalibration simulator, an upload-and-score form and an audit log of every scoring call. Plain
+HTML and SVG served by the same process as the API; nothing to build, nothing to phone home.
 
 1. **One artefact, one manifest.** `sensorlab train` writes `pipeline.joblib` and a JSON model
    card (version, config, sensor layout, thresholds, fit report). `sensorlab info` prints it.
@@ -171,7 +191,9 @@ final action.
    floor (measured leave-one-run-out at fit time); the runbook says what `watch` and `alert`
    mean and who acts.
 5. **It runs without a data scientist.** `sensorlab score --input batch.csv --drift` in a
-   scheduled job; CI smoke-tests the same path on every push.
+   scheduled job, or `POST /api/score` from the plant historian; the container image trains
+   the reference model at build time and exposes a health check; CI smoke-tests the same path
+   on every push.
 
 ### Onboarding another plant
 
@@ -183,8 +205,9 @@ onset at sample 20 (train files) or 160 (test files).
 
 ## 🧪 Engineering discipline
 
-* 102 tests in ~20 s, including an end-to-end pipeline fit / predict / save / load / evaluate on a
-  tiny dataset and a CLI round trip through `train → score → info`.
+* 109 tests in ~30 s, including an end-to-end pipeline fit / predict / save / load / evaluate on a
+  tiny dataset, a CLI round trip through `train → score → info`, and the API served through
+  FastAPI's test client (upload, CSV download, audit, 404/422 paths).
 * CI on Python 3.11 and 3.12: ruff, pytest with coverage, CLI smoke test. CPU-only torch keeps
   the job short.
 * Notebooks are generated from `scripts/build_notebooks.py` and executed, so they cannot drift
@@ -218,11 +241,12 @@ src/sensorlab/
 ├── evaluation.py        leakage-guarded evaluation · multi-seed aggregation
 ├── monitoring.py        PSI drift monitor
 ├── pipeline.py          MonitoringPipeline: fit / predict / evaluate / save / load
-├── cli.py               sensorlab train | evaluate | score | info
+├── cli.py               sensorlab train | evaluate | score | serve | info
+├── server/              FastAPI app + static governance dashboard (index.html, app.js, styles.css)
 └── viz/                 matplotlib helpers
-app/streamlit_app.py     dashboard (Approach · Live run · Detectors · Diagnosis · Decision · Operate)
 notebooks/               01_eda … 06_pipeline (generated + executed)
 docs/runbook.md          operations runbook
+Dockerfile               python:3.11-slim, CPU torch, model trained at build, health check
 artifacts/results.json   multi-seed held-out results (source of truth for the tables above)
 ```
 

@@ -168,6 +168,7 @@ class MonitoringPipeline:
         self.rul_: QuantileRUL | None = None
         self.drift_: DriftMonitor | None = None
         self.fit_report_: dict[str, Any] = {}
+        self.metadata_: dict[str, Any] = {}  # free-form provenance (dataset, git sha, …)
         self.fitted_at_: str = ""
         self.version_: str = __version__
 
@@ -557,6 +558,7 @@ class MonitoringPipeline:
             "far_thresholds": self.far_thresholds_,
             "decision_thresholds": self.decision_thresholds_,
             "fit_report": self.fit_report_,
+            "metadata": self.metadata_,
         }
 
     def save(self, path: str | Path) -> Path:
