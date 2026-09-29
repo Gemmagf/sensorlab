@@ -63,11 +63,19 @@ FAULT_CATALOGUE: tuple[FaultRecipe, ...] = (
 )
 
 
+# The synthetic layout is deliberately smaller than the real 52-channel TEP:
+# 22 "measurements" + 11 "manipulated variables". Names follow the XMEAS/XMV
+# convention so the diagnosis reports read like the real thing.
+SYNTHETIC_N_XMEAS = 22
+SYNTHETIC_N_XMV = 11
+SYNTHETIC_N_SENSORS = SYNTHETIC_N_XMEAS + SYNTHETIC_N_XMV
+
+
 @dataclass
 class SyntheticTEPConfig:
     """Parameters controlling the synthetic generator."""
 
-    n_sensors: int = TEP.n_total
+    n_sensors: int = SYNTHETIC_N_SENSORS
     n_latent: int = 6
     fault_run_minutes: int = 480
     sample_minutes: float = TEP.sample_minutes
@@ -221,10 +229,8 @@ def generate_synthetic_dataset(
 
 
 def _default_sensor_names(n: int) -> list[str]:
-    n_xmeas = TEP.n_xmeas
-    n_xmv = TEP.n_xmv
-    base = [f"XMEAS({i + 1})" for i in range(n_xmeas)] + [
-        f"XMV({i + 1})" for i in range(n_xmv)
+    base = [f"XMEAS({i + 1})" for i in range(SYNTHETIC_N_XMEAS)] + [
+        f"XMV({i + 1})" for i in range(SYNTHETIC_N_XMV)
     ]
     if n <= len(base):
         return base[:n]

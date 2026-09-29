@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 from sensorlab.data.loader import TEPDataset
 
@@ -91,9 +92,6 @@ def sliding_windows(
             continue
         starts = np.arange(0, n - window + 1, stride)
         ends = starts + window  # exclusive
-        # Build with stride_tricks for speed
-        from numpy.lib.stride_tricks import sliding_window_view
-
         view = sliding_window_view(Xr, window_shape=window, axis=0)[::stride]
         # view shape: (n_win, n_sensors, window) — transpose to (n_win, window, n_sensors)
         view = view.transpose(0, 2, 1)
@@ -110,3 +108,61 @@ def sliding_windows(
     end_idx = np.concatenate(end_idx_parts, axis=0)
     window_labels = np.concatenate(label_parts, axis=0) if label_parts else None
     return windows, window_labels, end_idx
+
+
+def window_index_per_sample(
+    end_idx: np.ndarray, run_id: np.ndarray, n_samples: int, backfill: bool = True
+) -> np.ndarray:
+    """For every sample, the index of the most recent window (by end position) in its run.
+
+    Returns an int array of shape ``(n_samples,)`` with values in
+    ``[0, len(end_idx))`` or ``-1`` where no window is available. Samples
+    between two window ends inherit the earlier window ("forward fill", which
+    is what a streaming scorer sees); samples before the first window end of
+    a run inherit that first window when ``backfill`` is True, else ``-1``.
+
+    This is the single place that maps window-level outputs (LSTM-AE scores,
+    classifier predictions, RUL estimates) back onto the sample axis so every
+    downstream consumer — metrics, decision layer, dashboard — is aligned on
+    the same onsets and the same time unit.
+    """
+    out = np.full(n_samples, -1, dtype=np.int64)
+    if end_idx.size == 0:
+        return out
+    out[end_idx] = np.arange(end_idx.size)
+    for r in np.unique(run_id):
+        pos = np.where(run_id == r)[0]
+        sub = out[pos]
+        has = sub >= 0
+        if not has.any():
+            continue
+        # forward fill: carry the last seen window index
+        carried = np.where(has, np.arange(sub.size), -1)
+        carried = np.maximum.accumulate(carried)
+        filled = np.where(carried >= 0, sub[np.maximum(carried, 0)], -1)
+        if backfill:
+            first = int(np.argmax(has))
+            filled[:first] = sub[first]
+        out[pos] = filled
+    return out
+
+
+def windows_to_per_sample(
+    values: np.ndarray,
+    end_idx: np.ndarray,
+    run_id: np.ndarray,
+    n_samples: int,
+    fill_value: float = 0.0,
+    backfill: bool = True,
+) -> np.ndarray:
+    """Lift per-window values ``(n_win, ...)`` to per-sample ``(n_samples, ...)``.
+
+    See :func:`window_index_per_sample` for the alignment rule. Runs shorter
+    than the window (no window at all) get ``fill_value``.
+    """
+    idx = window_index_per_sample(end_idx, run_id, n_samples, backfill=backfill)
+    values = np.asarray(values)
+    out = np.full((n_samples, *values.shape[1:]), fill_value, dtype=values.dtype)
+    valid = idx >= 0
+    out[valid] = values[idx[valid]]
+    return out

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Self
 
 import numpy as np
 import xgboost as xgb
+
+from sensorlab._compat import default_n_jobs
 
 
 def window_features(windows: np.ndarray, sensor_names: list[str]) -> tuple[np.ndarray, list[str]]:
@@ -49,10 +51,10 @@ class FaultClassifier:
     colsample_bytree: float = 0.9
     reg_lambda: float = 1.0
     random_state: int = 0
-    # n_jobs=1 by default — multi-threaded XGBoost segfaults on macOS arm64
-    # when libomp is loaded simultaneously by PyTorch. Single-threaded is
-    # fast enough for our scale and reliable across platforms.
-    n_jobs: int = 1
+    # Multi-threaded XGBoost segfaults on macOS arm64 when libomp is loaded
+    # simultaneously by PyTorch, so we run single-threaded there and use every
+    # core elsewhere (see ``sensorlab._compat``).
+    n_jobs: int = field(default_factory=default_n_jobs)
     name: str = "XGB-fault"
 
     def __post_init__(self) -> None:

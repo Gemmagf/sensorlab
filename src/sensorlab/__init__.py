@@ -6,5 +6,5 @@ from sensorlab import _compat  # noqa: F401, I001
 
 from sensorlab.config import TEP, ARTIFACTS_DIR, DATA_DIR, MODELS_DIR, PROJECT_ROOT
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["ARTIFACTS_DIR", "DATA_DIR", "MODELS_DIR", "PROJECT_ROOT", "TEP", "__version__"]

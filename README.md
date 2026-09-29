@@ -5,247 +5,234 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)
 
-> **Fault detection, diagnosis and remaining-useful-life on the Tennessee Eastman chemical process benchmark — from sensor telemetry to operational decisions.**
+> **From sensor telemetry to an operational decision — fault detection, diagnosis and
+> remaining-useful-life on the Tennessee Eastman benchmark, packaged as something a plant team
+> can actually run.**
 
-`sensorlab` is an end-to-end pipeline for **continuous-process monitoring**.
-Three complementary detectors (classical multivariate SPC, Isolation Forest,
-LSTM autoencoder) are compared head-to-head on detection delay and false alarm
-rate. An XGBoost classifier with SHAP attributions pinpoints the root cause
-sensor of each fault. A quantile-regression RUL head estimates time-to-failure
-with calibrated uncertainty. A **cost-aware decision layer** maps detector
-scores onto operational thresholds that minimise expected loss — turning a raw
-anomaly score into an actionable "intervene now / schedule maintenance / wait"
-recommendation.
+`sensorlab` is an end-to-end monitoring pipeline for continuous chemical processes. Three
+complementary detectors (multivariate SPC, Isolation Forest, LSTM autoencoder) flag anomalies,
+an XGBoost classifier with SHAP attributions names the fault and the sensor driving it, a
+conformally-calibrated quantile model bounds the remaining useful life, and a **cost-aware
+decision layer** turns all of that into one of four actions: `wait`, `investigate`,
+`schedule_maintenance`, `intervene_now`.
+
+The deliverable is not a notebook. It is one fitted object (`MonitoringPipeline`) with a
+manifest, a CLI (`sensorlab train | evaluate | score`), a drift monitor, a dashboard and an
+[operations runbook](docs/runbook.md) — built the way a forward-deployed engineer hands a
+model to the people who will live with it.
 
 ---
-
-## ✨ Why this project
-
-The [Tennessee Eastman process](https://en.wikipedia.org/wiki/Tennessee_Eastman_Process)
-(Downs & Vogel, 1993) is the canonical benchmark for fault detection in
-continuous chemical processes — used in hundreds of papers
-([Bathelt et al. 2015](https://doi.org/10.1016/j.ifacol.2015.08.199),
-Yin et al., Lyman & Georgakis). It has **41 process measurements** + **12
-manipulated variables**, **21 documented fault scenarios** ranging from step
-changes (catalyst poisoning, feed loss) to slow drifts (sticking valves,
-kinetics degradation), and is simulated from first principles — making it the
-closest public stand-in for the kind of plant data a chemical R&D team
-actually sees.
-
-This repo treats TEP exactly the way an industrial team would: build a
-detection layer, build a diagnosis layer on top, layer RUL on slow faults,
-then translate everything into operating thresholds that minimise the
-business cost.
-
-## 🏗️ Architecture
-
-```
-                            ┌─────────────────────────┐
-   TEP simulator            │   sensorlab.data        │
-   or Rieth 2017 release ──►│   loaders & preprocess  │
-                            └────────────┬────────────┘
-                                         │ (X, y, fault_type)
-              ┌──────────────────────────┼──────────────────────────┐
-              ▼                          ▼                          ▼
-  ┌────────────────────┐  ┌─────────────────────────┐  ┌────────────────────┐
-  │  detection         │  │  diagnosis              │  │  rul               │
-  │  • T² / Q SPC      │  │  • XGBoost multi-class  │  │  • quantile reg.   │
-  │  • IsolationForest │  │  • SHAP per fault       │  │  • Cox survival    │
-  │  • LSTM-AE         │  │                         │  │                    │
-  └─────────┬──────────┘  └───────────┬─────────────┘  └─────────┬──────────┘
-            │   scores                │  fault label             │ time-to-fail
-            └──────────────┬──────────┴────────────┬─────────────┘
-                           ▼                       ▼
-                ┌──────────────────────┐  ┌────────────────────┐
-                │  decision layer      │  │  Streamlit app     │
-                │  cost-weighted       │──►   what-if explorer │
-                │  threshold tuning    │  └────────────────────┘
-                └──────────────────────┘
-```
 
 ## 🚀 Quick start
 
 ```bash
-# Set up
-make install            # creates .venv (Python 3.11) and installs everything
-make test               # 30+ unit tests should pass
+make install                         # .venv (Python 3.11), CPU torch, app + dev extras
+make test                            # 102 tests, ~20 s
 
-# End-to-end on synthetic TEP-like data (no download needed)
-make train
+sensorlab train                      # fit on synthetic TEP-like data, evaluate on held-out runs,
+                                     # -> models/pipeline.joblib (+ manifest), artifacts/results.json
+sensorlab score --input batch.csv --output scored.csv --drift
+                                     # one row per sample: scores, confirmed alarm, fault, RUL, action
+sensorlab evaluate --seeds 0 1 2     # the multi-seed numbers below (~1 min)
 
-# Or on the real benchmark (Rieth et al. 2017, ~5 GB)
-make download-tep
-python scripts/train_all.py --data real
-
-# Interactive
-make notebook           # walk through 01_eda → 05_decision_layer
-make app                # launch the Streamlit dashboard
+make app                             # Streamlit: live runs, detector benchmark, SHAP, cost knobs,
+                                     # per-run outcomes, drift simulation
+make notebook                        # 01_eda … 06_pipeline
 ```
 
-## 📦 Package layout
+Real benchmark instead of the generator: `make download-tep` (~5 GB, Rieth et al. 2017),
+`pip install -e ".[real]"`, `python scripts/prepare_tep.py`, then `sensorlab train --data real`.
+
+## 🏗️ What ships and how it fits together
 
 ```
-src/sensorlab/
-├── config.py              # paths, TEP spec, fault catalogue
-├── data/
-│   ├── synthetic.py       # reproducible TEP-like generator
-│   ├── loader.py          # unified loader: synthetic or real
-│   └── preprocess.py      # windowing, scaling, train/val/test splits
-├── detection/
-│   ├── spc.py             # Hotelling T² + SPE/Q residual statistics
-│   ├── iforest.py         # IsolationForest wrapper
-│   ├── autoencoder.py     # LSTM autoencoder (PyTorch)
-│   └── metrics.py         # detection delay, FAR, TPR, AUC
-├── diagnosis/
-│   ├── classifier.py      # XGBoost multi-class
-│   └── explain.py         # SHAP per-fault & global
-├── rul/
-│   ├── quantile.py        # quantile gradient boosting (q=0.1/0.5/0.9)
-│   └── survival.py        # CoxPH baseline
-├── decision/
-│   └── cost.py            # expected-cost threshold optimisation
-└── viz/
-    └── plots.py           # consistent matplotlib helpers
+                 ┌──────────────────────────────────────────────────────────────────┐
+  telemetry ───► │  MonitoringPipeline                          models/pipeline.joblib │
+  (X, run_id)    │                                                + .manifest.json     │
+                 │  Standardizer (train-normal)                                       │
+                 │     ├─ PCA T²/Q  ─┐                                                │
+                 │     ├─ IForest   ─┼─ per-sample scores ─► FAR threshold (val-normal) │
+                 │     └─ LSTM-AE  ─┘        │              cost-optimal threshold (val)│
+                 │                           ▼                                        │
+                 │  window features ─► XGBoost + SHAP ─► fault id, driver sensor       │
+                 │                  ─► quantile GBM + conformal margin ─► RUL [p10,p90]│
+                 │                                                                    │
+                 │  confirmed alarm × fault × RUL vs horizon ─► action                 │
+                 │  DriftMonitor (PSI vs train-normal) ─► stable / watch / alert       │
+                 └──────────────────────────────────────────────────────────────────┘
+                        ▲                     ▲                       ▲
+              sensorlab train         sensorlab score          Streamlit "Operate" tab
+              sensorlab evaluate      (batch CSV/parquet)      docs/runbook.md
 ```
+
+* **`sensorlab.data`** — `TEPDataset` is the contract every source satisfies (synthetic
+  generator, Rieth 2017 release, or your plant). `validate()` enforces it; `active_fault_id`
+  is the label that is true *at time t*; `windows_to_per_sample` is the single place
+  window-level outputs are mapped back to the sample axis.
+* **`sensorlab.detection`** — three detectors behind one `fit(X_normal) / score(X)` interface,
+  plus delay / FAR / AUROC metrics that operate on whole runs.
+* **`sensorlab.diagnosis`**, **`sensorlab.rul`**, **`sensorlab.decision`** — the supervised
+  heads and the expected-cost threshold sweep.
+* **`sensorlab.pipeline`** — the artefact: `fit / predict / evaluate / save / load`, config as
+  a dataclass, manifest as JSON.
+* **`sensorlab.evaluation`** — leakage guards (whole-run masks, validation-only thresholds) and
+  multi-seed aggregation. **`sensorlab.monitoring`** — PSI drift. **`sensorlab.cli`** — the
+  four commands.
 
 ## 🔬 Results
 
-Numbers below come from `make train` on the synthetic generator (96 runs ×
-~160 samples = 15 360 timesteps; 33 sensors; 21 fault scenarios; 48 runs
-held out as test). The same pipeline run with `--data real` on the Rieth et
-al. 2017 release reproduces results in line with the published Bathelt et
-al. 2015 baselines. All numbers come from [artifacts/results.json](artifacts/results.json).
+Reference configuration (`sensorlab evaluate --seeds 0 1 2`): synthetic generator, 96 runs of
+160 samples at 3 min (12 normal, 4 per fault × 21 faults), 33 sensors. Runs are split
+**49 / 23 / 24** into train / validation / test **by run**; every number below is on the
+**24 held-out test runs** (21 faulty), with thresholds fixed on validation. Mean ± std over
+three seeds, straight from [`artifacts/results.json`](artifacts/results.json) — the dashboard
+reads the same file.
 
-### Detection — TPR at 1 % FAR, median delay, AUROC
+### Detection — threshold at 1 % FAR on validation-normal
 
-| Detector            | AUROC     | TPR @ FAR=1 % | Fraction detected | Median delay  | Fit time |
-|---------------------|----------:|--------------:|------------------:|--------------:|---------:|
-| Hotelling T² + Q    | 0.76      | 0.15          | 50 %              | 106 min       | 0.05 s   |
-| Isolation Forest    | 0.84      | 0.38          | 71 %              |  44 min       | 1.9 s    |
-| **LSTM Autoencoder**| **0.93**  | **0.59**      | **90 %**          |  **42 min**   | 9.2 s    |
+| Detector          | AUROC             | TPR @ FAR 1 %   | FAR observed | Faulty runs caught | Median delay | p90 delay | Fit   |
+|-------------------|------------------:|----------------:|-------------:|-------------------:|-------------:|----------:|------:|
+| Hotelling T² + Q  | 0.81 ± 0.04       | 0.34 ± 0.14     | 1.2 %        | 76 %               | 38 ± 11 min  | 201 min   | 0.0 s |
+| Isolation Forest  | 0.84 ± 0.01       | 0.32 ± 0.17     | 0.7 %        | 75 %               | 42 ± 14 min  | 220 min   | 0.6 s |
+| **LSTM-AE**       | **0.92 ± 0.02**   | **0.68 ± 0.10** | 3.8 %        | **98 %**           | **28 ± 5 min** | 156 min | 1.3 s |
 
-**What this tells us**
+**What this tells us.** The recurrent model reads the temporal signature the other two ignore
+and catches nearly every faulty run with the shortest lead time. It also over-shoots the
+false-alarm target on test (3.8 % vs 1 %): its validation-normal scores are tighter than its
+test-normal scores, so its threshold generalises worse than the two classical detectors'. The
+"FAR observed" column is the calibration check a plant team should ask for; without it the
+AUROC over-sells the LSTM.
 
-- The progression matches the published TEP story: classical multivariate SPC
-  is conservative, tree ensembles catch sharp regime changes, the recurrent
-  deep model wins by reading the **temporal** signature that the other two
-  ignore.
-- The LSTM-AE catches **9 out of 10** disturbances at a 1 % false-alarm rate
-  with a **42-minute lead time** on average — enough headroom for an operator
-  to take corrective action before downstream KPIs (off-spec product, scrap)
-  even react.
-- T²/Q is **180× faster to fit** than the LSTM-AE and still gives 50 %
-  detection at the strict operating point — it remains the right pick when
-  inference latency or interpretability is non-negotiable.
-- **None of the three is dominated on every metric**: T²/Q is fastest,
-  IsolationForest is the best speed/accuracy compromise, LSTM-AE is the
-  most accurate. A production deployment should ensemble all three and
-  use the **decision layer** to pick a fused threshold.
+### Decision layer — operating threshold chosen on validation, cost measured on test
 
-### Diagnosis — 22-way classification (Normal + F01–F21)
+Reference cost mix: false alarm 100 CHF, missed fault 5 000 CHF, 50 CHF per minute of delay.
 
-| Model            | Accuracy | macro-F1 | Fit time |
-|------------------|---------:|---------:|---------:|
-| XGBoost + SHAP   | 0.57     | 0.58     | 67 s     |
+| Detector          | Test cost (CHF)       | False alarms / 1 320 normal samples | Missed faults / 21 | Mean delay   |
+|-------------------|----------------------:|------------------------------------:|-------------------:|-------------:|
+| Hotelling T² + Q  | 54 600 ± 8 300        | 356 ± 108                           | 0                  | 18 ± 3 min   |
+| **Isolation Forest** | **48 200 ± 4 800** | **244 ± 76**                        | 0                  | 23 ± 8 min   |
+| LSTM-AE           | 49 300 ± 5 000        | 241 ± 135                           | 0                  | 24 ± 9 min   |
 
-**What this tells us**
+**What this tells us.** At a 50 : 1 missed-to-false-alarm ratio every detector is pushed into a
+zero-miss regime and the ranking flips: the cheapest detector on test is Isolation Forest, not
+the one with the best AUROC, and the difference between the two is within seed noise. The
+pipeline's `auto` primary-detector rule (cheapest on validation) picked LSTM-AE on one seed and
+Isolation Forest on two — which is the honest answer: at this cost mix they are interchangeable
+and the choice should be made on inference cost and interpretability. Change the cost mix and
+the answer changes; that is what the dashboard's Decision tab is for.
 
-- Chance accuracy on this 22-class task is ~5 % — the model is **~11×
-  better than random**, with macro-F1 ≈ accuracy meaning performance is not
-  driven by a single dominant class.
-- SHAP identifies a **single dominant driver sensor for every fault type**
-  (see [artifacts/results.json](artifacts/results.json) → `diagnosis.top_sensors_per_fault`).
-  Examples: F01 → `XMV(2)`, F04 → `XMEAS(21)`, F14 → `XMEAS(21)`, F17 → `XMEAS(1)`.
-- Operationally this is the **mean-time-to-root-cause** lever: instead of a
-  generic "something is wrong" alarm, the engineer reads *"sensor X is
-  driving the model toward fault family Y"* and can intervene directly.
-- Remaining 43 % error concentrates on **fault pairs with overlapping sensor
-  signatures** (notebook 03 shows the confusion matrix) — a hierarchical
-  classifier (fault-family first, then sub-type) is the natural next step.
+### Diagnosis — 22-way classification of the fault *active at time t*
 
-### Remaining useful life — quantile gradient boosting
+| Accuracy        | Balanced accuracy | Macro-F1        | Fit  |
+|----------------:|------------------:|----------------:|-----:|
+| 0.70 ± 0.01     | 0.63 ± 0.01       | 0.63 ± 0.01     | 9 s  |
 
-| Metric                                | Value    |
-|---------------------------------------|---------:|
-| MAE (test, faulty samples)            |  94 min  |
-| Pinball loss (q = 0.5)                |  47.2    |
-| 80 % prediction-interval coverage     |  69 %    |
-| Fit time                              |  186 s   |
+**What this tells us.** Version 0.1 reported 0.57 on the same data. The gain comes from a label
+fix, not a model change: pre-onset samples of a faulty run are nominal and were being labelled
+with the run's fault id, which asked the classifier to separate identical distributions. The
+remaining errors concentrate on faults that share a mechanic in the synthetic catalogue (e.g.
+F04 / F11 / F14 all lean on `XMEAS(21)`); SHAP gives one dominant driver sensor per fault, which
+is the mean-time-to-root-cause lever on a real plant.
 
-**What this tells us**
+### Remaining useful life — quantile GBM with a split-conformal margin
 
-- 94-min MAE on runs that last ~480 min is a **~20 % relative error** — useful
-  for *ranking* runs by urgency but not for hard service-level commitments.
-- Coverage of 69 % vs the 80 % target means the model is **slightly
-  over-confident**: 11 percentage points of intervals are too narrow. This is
-  typical of vanilla quantile GBMs and is the **single highest-leverage
-  next-step** — wrapping the model in **conformal prediction** would calibrate
-  intervals to nominal with no retraining.
-- The pinball loss at q = 0.5 (47.2) gives a metric that doesn't reward
-  intervals being uselessly wide — pairing it with the coverage number is the
-  honest way to report quantile performance.
+| MAE (median)  | 80 % coverage, raw | 80 % coverage, conformal | Interval width | Conformal margin | Fit  |
+|--------------:|-------------------:|-------------------------:|---------------:|-----------------:|-----:|
+| 91 ± 3 min    | 59 %               | **83 %**                 | 279 min        | 31 min           | 1.6 s |
 
-### Decision layer — translating scores into operating cost
+**What this tells us.** A raw quantile GBM under-covers badly on held-out runs. Calibrating the
+interval on the validation runs (conformalized quantile regression) restores nominal coverage
+with no retraining and a 31-minute widening — that is the difference between an interval an
+operator can plan around and one that is quietly wrong one time in two. The MAE is ~20 % of the
+run length: useful for ranking runs by urgency, not for service-level promises. On this
+benchmark the target is *time until the end of the run*, a deterministic function of time since
+onset, so it measures how well the process state encodes elapsed fault time rather than a
+physical time-to-failure.
 
-At the reference cost mix (false alarm = 100 CHF, missed fault = 5 000 CHF,
-delay = 50 CHF/min) — picked because it represents the typical 1 : 50 ratio
-in a continuous chemical line where a single missed fault scraps a batch:
+### End to end — what the operator receives on the test runs
 
-| Detector            | Optimal threshold | Expected cost   | False alarms | Missed | Mean delay |
-|---------------------|------------------:|----------------:|-------------:|-------:|-----------:|
-| Hotelling T² + Q    |  3.6              | 224 500 CHF     | 1 714        |  0     | 12.6 min   |
-| **Isolation Forest**| **0.50**          | **148 000 CHF** | **574**      |  **0** | 21.6 min   |
-| LSTM Autoencoder    |  1.5              | 200 750 CHF     | 1 444        |  2     | 11.3 min   |
+Confirmed-alarm precision 0.90 ± 0.05 and recall 0.71 ± 0.14 per sample; every faulty test run
+gets a confirmed alarm, and the per-run table in the **Operate** tab shows, for each run, the
+onset, the first alarm after it, the fault diagnosed at that moment, the RUL median and the
+final action.
 
-**What this tells us**
+## 🧭 Deployment story
 
-- **The "best detector" depends on the cost mix, not just the AUROC.** At
-  this cost ratio IsolationForest wins decisively (~33 % cheaper than the
-  next option) because it achieves 0 missed faults at a tolerable
-  false-alarm rate.
-- LSTM-AE, despite having the **highest AUROC**, is *not* the cost-optimal
-  pick here: at this threshold it lets 2 faults through and the per-miss
-  penalty of 5 000 CHF outweighs its faster median delay.
-- A change in the cost mix shifts the winner — the Streamlit decision tab
-  lets a process engineer drag the sliders and watch the optimum update in
-  real time, turning the model into a tool finance and operations can
-  actually negotiate over.
+1. **One artefact, one manifest.** `sensorlab train` writes `pipeline.joblib` and a JSON model
+   card (version, config, sensor layout, thresholds, fit report). `sensorlab info` prints it.
+2. **A contract with operations.** `predict` returns an `action` column with four values and a
+   deterministic rule set documented in the [runbook](docs/runbook.md). The cost mix and the
+   intervention horizon are inputs owned by the business, not hyper-parameters.
+3. **No peeking.** Scaler and detectors see normal training runs only; FAR thresholds come from
+   validation-normal, the operating threshold from validation runs; every reported number is on
+   test. `evaluate` refuses masks that split a run.
+4. **It knows when it is out of its depth.** `check_drift` reports per-sensor PSI against the
+   training-normal distribution, with thresholds set above the plant's own run-to-run noise
+   floor (measured leave-one-run-out at fit time); the runbook says what `watch` and `alert`
+   mean and who acts.
+5. **It runs without a data scientist.** `sensorlab score --input batch.csv --drift` in a
+   scheduled job; CI smoke-tests the same path on every push.
 
-## 🧭 Overall conclusions
+### Onboarding another plant
 
-1. **The three-detector stack is honest.** No single model dominates; each
-   trades cost, latency and interpretability differently. Reporting all three
-   is what an industrial team needs to make the deployment call.
-2. **Detection is the easy part; diagnosis is where domain value lives.**
-   SHAP-driven root-cause attribution closes the gap between alarm and action
-   and is the part a process engineer will use day-to-day.
-3. **Calibration matters as much as accuracy.** A 0.93 AUROC tells finance
-   nothing on its own; a calibrated cost curve does. Likewise a 94-min MAE
-   without coverage diagnostics over-promises.
-4. **Largest improvement on the table**: conformal-prediction wrapping the
-   RUL head — pure win, no retraining, closes the 11-pp coverage gap.
-5. **Second-largest**: hierarchical diagnosis (fault-family → sub-type) to
-   recover the 43 % of diagnosis errors that concentrate on confused fault
-   pairs.
-6. **What this would look like deployed**: detector → fault classifier →
-   RUL bound → decision layer, with the cost model owned by the business and
-   the model owners responsible only for calibration and explainability.
-   That separation is what the package layout encodes.
+Write one function that returns a `TEPDataset` (sensor matrix, contiguous run ids, per-run
+onsets and fault labels — see the class docstring), call `validate()`, and everything else is
+source-agnostic. `dataset_from_rieth_frame` is the worked example for the real benchmark:
+case-insensitive column matching, unique run ids from `(split, faultNumber, simulationRun)`,
+onset at sample 20 (train files) or 160 (test files).
 
-## 🧪 Tests & CI
+## 🧪 Engineering discipline
 
-```bash
-make test    # pytest -v
-make lint    # ruff check + format check
+* 102 tests in ~20 s, including an end-to-end pipeline fit / predict / save / load / evaluate on a
+  tiny dataset and a CLI round trip through `train → score → info`.
+* CI on Python 3.11 and 3.12: ruff, pytest with coverage, CLI smoke test. CPU-only torch keeps
+  the job short.
+* Notebooks are generated from `scripts/build_notebooks.py` and executed, so they cannot drift
+  from the library.
+* Platform shims (`_compat.py`) handle the macOS libomp clash between PyTorch and XGBoost and
+  apply thread caps there only.
+
+## 🧱 Known limitations and next steps
+
+* **Synthetic data.** The generator maps 21 faults onto 7 mechanics with the same onset fraction;
+  the real release will shift every number. Running `--data real` is the first thing to do
+  before believing the tables above.
+* **LSTM-AE FAR calibration.** 3.8 % observed vs 1 % target: a larger validation-normal set or
+  a per-run score normalisation would close it.
+* **Hierarchical diagnosis** (fault family → sub-type) for the confusable pairs.
+* **Drift on marginals only.** PSI misses correlation changes; a T²-on-normal-periods check is
+  the natural complement.
+* **RUL semantics.** A benchmark with variable failure times is needed before "time-to-failure"
+  means what an operator thinks it means.
+
+## 📦 Layout
+
 ```
-
-GitHub Actions runs the test suite on Python 3.11 and 3.12 on every push.
+src/sensorlab/
+├── config.py            paths, real TEP spec (41 XMEAS + 11 XMV, onset conventions)
+├── data/                synthetic generator · loaders (synthetic / Rieth) · windows & splits
+├── detection/           PCA T²/Q · IsolationForest · LSTM-AE · run-level metrics
+├── diagnosis/           window features · XGBoost · SHAP per sensor
+├── rul/                 quantile GBM + conformal margin · Cox baseline (optional extra)
+├── decision/            cost model · threshold sweep
+├── evaluation.py        leakage-guarded evaluation · multi-seed aggregation
+├── monitoring.py        PSI drift monitor
+├── pipeline.py          MonitoringPipeline: fit / predict / evaluate / save / load
+├── cli.py               sensorlab train | evaluate | score | info
+└── viz/                 matplotlib helpers
+app/streamlit_app.py     dashboard (Approach · Live run · Detectors · Diagnosis · Decision · Operate)
+notebooks/               01_eda … 06_pipeline (generated + executed)
+docs/runbook.md          operations runbook
+artifacts/results.json   multi-seed held-out results (source of truth for the tables above)
+```
 
 ## 📚 References
 
 - Downs, J.J. & Vogel, E.F. (1993). *A plant-wide industrial process control problem*. Computers & Chemical Engineering.
 - Bathelt, A., Ricker, N.L. & Jelali, M. (2015). *Revision of the Tennessee Eastman process model*. IFAC-PapersOnLine.
 - Rieth, C.A. et al. (2017). *Issues and Advances in Anomaly Detection Evaluation for Joint Human-Automated Systems*. Harvard Dataverse.
+- Romano, Y., Patterson, E. & Candès, E. (2019). *Conformalized Quantile Regression*. NeurIPS.
+- Jackson, J.E. & Mudholkar, G.S. (1979). *Control procedures for residuals associated with principal component analysis*. Technometrics.
 
 ## 📄 License
 

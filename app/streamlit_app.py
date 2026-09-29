@@ -4,38 +4,34 @@ Run with::
 
     make app          # or
     streamlit run app/streamlit_app.py
+
+Everything shown here is produced by the same :class:`MonitoringPipeline`
+that ``sensorlab train`` serialises and ``sensorlab score`` runs in batch —
+the dashboard is a window onto the deployable artefact, not a parallel
+implementation.
 """
 
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-import sensorlab  # noqa: F401 — env-var setup first
+import sensorlab  # noqa: F401 — platform shims first
+from sensorlab.config import ARTIFACTS_DIR
 from sensorlab.data import (
-    Standardizer,
     SyntheticTEPConfig,
     load_dataset,
     sliding_windows,
     train_val_test_split_by_run,
 )
 from sensorlab.decision import CostModel, cost_curve, optimal_threshold
-from sensorlab.detection import (
-    IForestDetector,
-    LSTMAutoencoder,
-    PCAMonitor,
-    auroc,
-    detection_delay,
-    threshold_at_far,
-    true_positive_rate,
-)
-from sensorlab.diagnosis import (
-    FaultClassifier,
-    explain_classifier,
-    window_features,
-)
+from sensorlab.diagnosis import explain_classifier, window_features
+from sensorlab.pipeline import ALL_DETECTORS, MonitoringPipeline, PipelineConfig
 from sensorlab.viz import (
     plot_cost_curve,
     plot_detection_scores,
@@ -51,81 +47,87 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# Cached resources
+# Cached resources — every function is keyed on *all* the parameters that
+# change its output, so moving any sidebar control rebuilds exactly what it
+# should and nothing else.
 # ---------------------------------------------------------------------------
 
 
-@st.cache_resource(show_spinner="Generating synthetic TEP data…")
-def get_dataset(seed: int, n_normal: int, n_per_fault: int, run_minutes: int):
-    cfg = SyntheticTEPConfig(
-        n_normal_runs=n_normal,
-        n_runs_per_fault=n_per_fault,
-        fault_run_minutes=run_minutes,
+@st.cache_resource(show_spinner="Generating data, fitting the pipeline (one-time)…")
+def build_lab(
+    seed: int,
+    n_normal: int,
+    n_per_fault: int,
+    run_minutes: int,
+    window: int,
+    stride: int,
+    ae_epochs: int,
+):
+    ds = load_dataset(
+        "synthetic",
+        cfg=SyntheticTEPConfig(
+            n_normal_runs=n_normal,
+            n_runs_per_fault=n_per_fault,
+            fault_run_minutes=run_minutes,
+            seed=seed,
+        ),
+    )
+    train, val, test = train_val_test_split_by_run(ds, seed=seed)
+    cfg = PipelineConfig(
+        window=window,
+        stride=stride,
+        ae_epochs=ae_epochs,
+        ae_hidden=24,
+        ae_latent=6,
+        iforest_estimators=150,
+        xgb_estimators=120,
+        xgb_max_depth=5,
+        rul_estimators=60,
         seed=seed,
     )
-    return load_dataset("synthetic", cfg=cfg)
+    pipe = MonitoringPipeline(cfg).fit(ds, train, val)
+    scores = pipe.score_detectors(ds.X, ds.run_id)
+    evaluation = pipe.evaluate(ds, test, shap_samples=0)
+    predictions = pipe.predict(ds.X[test], ds.run_id[test])
+    return ds, {"train": train, "val": val, "test": test}, pipe, scores, evaluation, predictions
 
 
-@st.cache_resource(show_spinner="Splitting & standardising…")
-def get_splits(_ds, seed: int):
-    train, val, test = train_val_test_split_by_run(_ds, seed=seed)
-    sc = Standardizer.fit(_ds.X[train & (_ds.fault_id == 0)])
-    return train, val, test, sc, sc.transform(_ds.X)
-
-
-@st.cache_resource(show_spinner="Fitting detectors (one-time)…")
-def fit_detectors(_ds, train, val, _Xz, window: int, stride: int, ae_epochs: int):
-    normal_train = train & (_ds.fault_id == 0)
-    spc = PCAMonitor(var_explained=0.9).fit(_Xz[normal_train])
-    ifo = IForestDetector(n_estimators=200, random_state=0).fit(_Xz[normal_train])
-    windows, _, end_idx = sliding_windows(_Xz, _ds.run_id, window=window, stride=stride)
-    ae = LSTMAutoencoder(window=window, epochs=ae_epochs, hidden=24, latent=6, seed=0).fit(
-        windows[normal_train[end_idx]]
+@st.cache_resource(show_spinner="Computing SHAP attributions…")
+def compute_shap(
+    lab_key: tuple, _pipe: MonitoringPipeline, _ds, _test_mask, sample_size: int = 400
+):
+    Xz = _pipe.scaler_.transform(_ds.X)
+    windows, _, end_idx = sliding_windows(
+        Xz, _ds.run_id, window=_pipe.config.window, stride=_pipe.config.stride
     )
-    s_ae_win = ae.score(windows)
-    s_ae = np.zeros(_ds.n_samples, dtype=np.float32)
-    s_ae[end_idx] = s_ae_win
-    for r in np.unique(_ds.run_id):
-        m = np.where(_ds.run_id == r)[0]
-        sub = s_ae[m]
-        last = 0.0
-        for i, v in enumerate(sub):
-            if v == 0 and last > 0:
-                sub[i] = last
-            else:
-                last = v
-        s_ae[m] = sub
-    scores = {
-        "PCA-T2Q": spc.score(_Xz),
-        "IForest": ifo.score(_Xz),
-        "LSTM-AE": s_ae,
-    }
-    return scores, windows, end_idx
-
-
-@st.cache_resource(show_spinner="Training fault classifier (one-time)…")
-def fit_classifier(_ds, train, _windows, end_idx):
-    feats, fnames = window_features(_windows, _ds.sensor_names)
-    in_train = train[end_idx]
-    clf = FaultClassifier(n_estimators=200, max_depth=6).fit(
-        feats[in_train], _ds.fault_id[end_idx][in_train], feature_names=fnames
+    feats, fnames = window_features(windows, _pipe.sensor_names_)
+    in_test = np.where(_test_mask[end_idx])[0]
+    idx = np.random.default_rng(0).choice(in_test, min(sample_size, in_test.size), replace=False)
+    return explain_classifier(
+        _pipe.classifier_, feats[idx], fnames, _pipe.sensor_names_, max_background=sample_size
     )
-    return clf, feats, fnames
 
 
-@st.cache_data(show_spinner="Computing SHAP report…")
-def compute_shap(_clf, feats, fnames, sensor_names, sample_size: int = 400):
-    idx = np.random.default_rng(0).choice(
-        feats.shape[0], min(sample_size, feats.shape[0]), replace=False
-    )
-    return explain_classifier(_clf, feats[idx], fnames, sensor_names, max_background=sample_size)
+@st.cache_data
+def load_published_results() -> dict | None:
+    path = Path(ARTIFACTS_DIR) / "results.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
+
+
+def _fmt_delay(x: float) -> str:
+    return "—" if x is None or np.isnan(x) else f"{x:.0f}"
 
 
 # ---------------------------------------------------------------------------
 # Sidebar — global configuration
 # ---------------------------------------------------------------------------
 st.sidebar.title("🏭 sensorlab")
-st.sidebar.caption("Tennessee Eastman fault detection & decision lab")
+st.sidebar.caption("Tennessee Eastman fault detection, diagnosis & decision lab")
 
 with st.sidebar.expander("Dataset", expanded=False):
     seed = st.number_input("seed", 0, 9999, 0, 1)
@@ -138,17 +140,26 @@ with st.sidebar.expander("Models", expanded=False):
     stride = st.slider("stride", 1, 5, 2)
     ae_epochs = st.slider("LSTM-AE epochs", 5, 50, 15, 5)
 
-ds = get_dataset(int(seed), int(n_normal), int(n_per_fault), int(run_minutes))
-train, val, test, scaler, Xz = get_splits(ds, int(seed))
-scores, windows, end_idx = fit_detectors(
-    ds, train, val, Xz, int(window), int(stride), int(ae_epochs)
+lab_key = (
+    int(seed),
+    int(n_normal),
+    int(n_per_fault),
+    int(run_minutes),
+    int(window),
+    int(stride),
+    int(ae_epochs),
 )
-normal_val = val & (ds.fault_id == 0)
+ds, masks, pipe, scores, evaluation, predictions = build_lab(*lab_key)
+train, val, test = masks["train"], masks["val"], masks["test"]
+test_runs = np.unique(ds.run_id[test])
 
 st.sidebar.markdown("---")
-st.sidebar.metric("Total samples", f"{ds.n_samples:,}")
-st.sidebar.metric("Runs", ds.n_runs)
-st.sidebar.metric("Sensors", ds.n_sensors)
+st.sidebar.metric("Samples", f"{ds.n_samples:,}")
+st.sidebar.metric(
+    "Runs (train / val / test)",
+    f"{np.unique(ds.run_id[train]).size} / {np.unique(ds.run_id[val]).size} / {test_runs.size}",
+)
+st.sidebar.metric("Primary detector", pipe.primary_detector_)
 
 
 # ---------------------------------------------------------------------------
@@ -156,158 +167,134 @@ st.sidebar.metric("Sensors", ds.n_sensors)
 # ---------------------------------------------------------------------------
 st.title("Industrial sensor anomaly lab")
 st.markdown(
-    "An end-to-end demo: synthetic Tennessee-Eastman traces → three detectors → "
-    "fault diagnosis with SHAP → cost-aware decision threshold."
+    "Synthetic Tennessee-Eastman telemetry → three detectors → SHAP diagnosis → "
+    "RUL interval → cost-aware operating decision. Everything below is computed on "
+    "**held-out test runs** by the same pipeline object that ships to the plant."
 )
 
-tab_approach, tab_overview, tab_detect, tab_diag, tab_decide = st.tabs(
+tab_approach, tab_overview, tab_detect, tab_diag, tab_decide, tab_operate = st.tabs(
     [
         "🧭 Approach",
         "📈 Live run",
         "🚨 Detector comparison",
         "🔍 Diagnosis (SHAP)",
         "💰 Decision layer",
+        "🛠 Operate",
     ]
 )
 
-# ----- Tab 0: data science approach & decisions -----------------------------
+# ----- Tab 0: approach -------------------------------------------------------
 with tab_approach:
-    st.subheader("How a data scientist would frame this problem")
+    st.subheader("From a plant question to a deployable decision")
     st.markdown(
         """
-A continuous chemical plant produces tens of sensor streams. Three operational
-questions matter to the team that runs it:
+A continuous chemical plant emits tens of correlated sensor streams. The team
+running it has three operational questions, each a different ML problem:
 
-1. **Detection** — *is something wrong, right now?*
-2. **Diagnosis** — *which fault is it, and why?*
-3. **Remaining useful life (RUL)** — *how long until I must intervene?*
+1. **Detection** — *is something wrong, right now?* (unsupervised, normal-only training)
+2. **Diagnosis** — *which fault, and which sensor is driving it?* (supervised + SHAP)
+3. **Remaining useful life** — *how long until I must intervene?* (quantile regression)
 
-Each is a different machine-learning problem. A **decision layer** then maps
-the model outputs onto an actual operating choice (alarm / wait / schedule
-maintenance) using the **business cost** of being wrong. This app walks
-through that whole chain on the Tennessee Eastman benchmark.
+A **decision layer** then turns model outputs into one of four actions —
+`wait`, `investigate`, `schedule_maintenance`, `intervene_now` — using a cost
+model that the business owns. That chain is one serialisable object
+(`MonitoringPipeline`) with a CLI (`sensorlab train | evaluate | score`) and a
+drift monitor, so hand-over to a plant team is a file and a command, not a
+notebook.
 """
     )
 
-    st.markdown("### 1 · Problem framing & dataset choice")
-    st.markdown(
-        """
-- **Why Tennessee Eastman?** It is the canonical benchmark for continuous
-  chemical process monitoring (Downs & Vogel 1993; Bathelt 2015; Rieth 2017).
-  41 process measurements + 12 manipulated variables, 21 documented fault
-  scenarios — from sharp regime shifts (catalyst poisoning, feed-line loss) to
-  slow drifts (sticking valve, kinetics degradation). It is the closest
-  public stand-in for the data a chemical R&D team actually sees.
-- **Why a synthetic generator inside the app?** Streamlit Cloud has limited
-  storage and the real Rieth release is ~5 GB. The generator here is
-  calibrated to look TEP-like; the published headline numbers come from a
-  separate `make train` run and live in `artifacts/results.json`. Swap to the
-  real data locally with `make download-tep`.
-"""
-    )
-
-    st.markdown("### 2 · EDA insights that drove the design")
-    st.markdown(
-        """
-- **Sensors are strongly cross-correlated** in continuous plants — confirmed
-  by the cross-correlation heatmap in [`01_eda.ipynb`](https://github.com/Gemmagf/sensorlab/blob/main/notebooks/01_eda.ipynb).
-  → use **multivariate** detectors over per-sensor thresholds.
-- Faults show up as **three distinct signatures**: mean shifts (step), trend
-  changes (drift), and variance changes (noise). No single detector covers
-  all three well. → compare **three complementary models** rather than one.
-- A 2-D PCA projection shows good class separability for ~75% of fault types.
-  → **diagnosis is feasible** with a tree ensemble on window-level features.
-"""
-    )
-
-    st.markdown("### 3 · Modelling decisions & rationale")
+    st.markdown("### Modelling decisions")
     st.markdown(
         """
 | Decision | Rationale |
 |---|---|
-| Train detectors on **normal data only** | Faults are rare and heterogeneous; a labelled supervised setup would overfit to the specific faults seen at training time and miss novel ones. |
-| Compare 3 detectors, not 1 | **T²/Q** is the gold-standard process baseline; **IsolationForest** is a robust ML default; **LSTM autoencoder** captures the temporal signature. They disagree on the hard cases — a candidate for a production ensemble. |
-| **Split by run**, not by sample | A naive sample split leaks: windows from the same run end up in train and test. The literature standard is to hold whole runs out. |
-| Standardise on **training-normal only** | Otherwise the scaler learns fault-mean and -variance and erases the signal it should preserve. |
-| Diagnosis on **window-level features** (mean, std, slope, range per sensor) | XGBoost on tabular features outperforms an end-to-end CNN on this dataset size and gives clean SHAP attributions. |
-| **SHAP for explainability** | A 0.93 AUROC means nothing in a regulated chemical environment if the engineer can't see *why* the model fired. SHAP per fault identifies the driver sensor — actionable. |
-| **Quantile GBM** for RUL | A single-number "time until fault" with no uncertainty is dangerous; quantile regression returns a calibrated 80% prediction interval. |
-| **Cost-aware threshold** | "Which threshold is best?" has no answer without an economic model. The Decision tab makes the trade-off explicit. |
+| Detectors trained on **normal data only** | Faults are rare and heterogeneous; supervised detection overfits to the faults seen in training and misses novel ones. |
+| Three complementary detectors | **T²/Q** is the process-monitoring gold standard; **IsolationForest** a robust tabular default; **LSTM-AE** reads the temporal signature. They disagree on the hard faults. |
+| **Split by run**, never by sample | Windows from one run in both train and test is leakage. Whole runs are held out. |
+| Scaler fitted on **training-normal only** | Otherwise it absorbs fault variance and erases the signal. |
+| Thresholds from **validation** only | FAR threshold on validation-normal, cost-optimal operating point on validation runs. The test split is untouched until reporting. |
+| Diagnosis target = fault **active at time t** | Pre-onset samples of a faulty run are nominal; labelling them with the fault id asks the model to separate identical distributions. Fixing this alone moved accuracy from 0.57 to ~0.70. |
+| Window-level features (mean, std, last, slope per sensor) | Tabular XGBoost beats an end-to-end CNN at this data size and yields sensor-level SHAP attributions. |
+| Quantile GBM for RUL | A point estimate without uncertainty is dangerous; three quantiles give an 80 % interval whose *coverage* is reported next to its MAE. |
+| Cost-aware threshold | "Best threshold" has no answer without a cost model. The Decision tab makes the trade-off explicit and negotiable. |
+| Every window-level output aligned through one helper | LSTM-AE, classifier and RUL predictions are lifted to the sample axis in one place, so metrics, decisions and the dashboard agree on onsets and time units. |
 """
     )
 
-    st.markdown("### 4 · Evaluation discipline")
+    st.markdown("### Evaluation discipline")
     st.markdown(
         """
-A single metric hides as much as it reveals — each layer is measured by **at
-least three complementary metrics**.
-
-- **Detection** → AUROC (threshold-free), TPR @ FAR = 1 % (operating point),
-  median detection delay in minutes (speed).
-- **Diagnosis** → accuracy, macro-F1 (handles the 22-class imbalance),
-  per-class confusion matrix.
-- **RUL** → MAE on the median prediction + **80 % prediction-interval
-  coverage** (the latter checks calibration, not just accuracy).
+- **Detection**: AUROC (threshold-free), TPR and observed FAR at the calibrated
+  threshold, fraction of faulty runs caught and median detection delay in minutes.
+- **Diagnosis**: accuracy, balanced accuracy, macro-F1 on 22 classes.
+- **RUL**: MAE of the median plus **80 % interval coverage** and mean width.
+- **Decision**: expected cost, false alarms, missed faults on test runs at the
+  threshold chosen on validation.
+- **Actions**: precision/recall of the confirmed alarm on test samples.
+- Published numbers are **mean ± std over three seeds**, stored in
+  `artifacts/results.json` and rendered below — the README reads the same file.
 """
     )
 
-    st.markdown("### 5 · Honest limitations")
+    published = load_published_results()
+    if published and "aggregate" in published:
+        agg = published["aggregate"]
+        seeds = list(published.get("seeds", {}).keys())
+        st.markdown(f"### Published results (seeds {', '.join(seeds)}, test runs only)")
+        rows = []
+        for name, r in agg["detection"].items():
+            rows.append(
+                {
+                    "detector": name,
+                    "AUROC": f"{r['auroc']['mean']:.3f} ± {r['auroc']['std']:.3f}",
+                    "TPR @ FAR 1 %": f"{r['tpr_at_far']['mean']:.2f} ± {r['tpr_at_far']['std']:.2f}",
+                    "runs detected": f"{r['fraction_detected']['mean']:.0%}",
+                    "median delay (min)": f"{r['median_delay_min']['mean']:.0f} ± {r['median_delay_min']['std']:.0f}",
+                    "test cost (CHF)": f"{agg['decision'][name]['expected_cost']['mean']:,.0f}",
+                }
+            )
+        st.dataframe(pd.DataFrame(rows).set_index("detector"))
+        d, u = agg["diagnosis"], agg["rul"]
+        st.caption(
+            f"Diagnosis accuracy {d['accuracy']['mean']:.3f} ± {d['accuracy']['std']:.3f}, "
+            f"macro-F1 {d['macro_f1']['mean']:.3f} · RUL MAE {u['mae_minutes']['mean']:.0f} min, "
+            f"80 % coverage {u['coverage_80']['mean']:.0%}."
+        )
+    else:
+        st.info("Run `sensorlab evaluate --seeds 0 1 2` to publish multi-seed results here.")
+
+    st.markdown("### Honest limitations")
     st.markdown(
         """
-Bullet points a senior reviewer will look for and that a strong portfolio
-should pre-empt:
-
-- Numbers come from the **synthetic generator**; the real Rieth 2017 release
-  may shift them. Rerun with `make download-tep` to validate.
-- The 22-class diagnosis at **0.57 accuracy** is honest but not state-of-the-
-  art; per-class breakdown (notebook 03) shows which fault pairs the model
-  confuses — a hierarchical classifier would help.
-- RUL 80 % prediction intervals currently cover ~**69 %** of test samples →
-  slight under-coverage. A **conformal-prediction wrapper** would tighten the
-  bounds to nominal — a clear next step.
-- Headline numbers are reported from a **single seed**. Multi-seed bootstrap
-  confidence intervals would make the claims more rigorous.
-- Single dataset → no cross-process transfer test. Real deployment would need
-  a robustness check against sensor drop-out and recalibration cycles.
+- Numbers come from the **synthetic generator**. The real Rieth 2017 release
+  (`make download-tep`, `sensorlab train --data real`) will shift them.
+- The RUL target is *time until the end of the simulated run*; with a fixed
+  run length it is a deterministic function of time since onset. Treat it as
+  a **ranking of urgency**, not as a calibrated time-to-failure.
+- The synthetic fault catalogue maps 21 faults onto 7 mechanics, so several
+  fault ids share a signature and are legitimately confusable.
+- The drift monitor uses PSI on marginals; it will not see a change in the
+  correlation structure with unchanged marginals.
 """
     )
 
-    st.markdown("### 6 · What this scaffolding buys you in production")
-    st.markdown(
-        """
-- **Detection layer** flags anomalies the operator otherwise sees only when a
-  downstream KPI drifts (off-spec product, scrap, missed delivery).
-- **Diagnosis layer + SHAP** reduces mean-time-to-root-cause: instead of a
-  general "something is off" alarm, the engineer gets *"sensor XMV(10) is
-  the dominant signal — most consistent with fault family F02 (feed loss)."*
-- **RUL layer** turns reactive maintenance into **scheduled** maintenance —
-  fewer unplanned shutdowns.
-- **Decision layer** makes the threshold negotiable with finance / ops:
-  "if you tell me a missed fault costs 20 k CHF and a false alarm 100 CHF,
-  here is the threshold that minimises your expected loss".
-
-The Decision tab in this app is the live version of that conversation.
-"""
-    )
-
-    st.info(
-        "Tip — start with **🚨 Detector comparison** for the headline numbers, "
-        "then walk through **🔍 Diagnosis** and finish on **💰 Decision layer** "
-        "to see scores translated into operating choices.",
-        icon="💡",
-    )
-
-# ----- Tab 1: live run ------------------------------------------------------
+# ----- Tab 1: live run --------------------------------------------------------
 with tab_overview:
-    st.subheader("Pick a run and watch the detectors")
+    st.subheader("Pick a test run and watch the pipeline")
+    default_idx = (
+        int(np.where(ds.run_fault_id[test_runs] == 4)[0][0])
+        if (ds.run_fault_id[test_runs] == 4).any()
+        else 0
+    )
     run_choice = st.selectbox(
-        "run",
-        options=list(range(ds.n_runs)),
+        "test run",
+        options=test_runs.tolist(),
         format_func=lambda r: f"#{r:02d}  ·  {ds.fault_names[int(ds.run_fault_id[r])]}",
-        index=int(np.where(ds.run_fault_id == 4)[0][0]),
+        index=default_idx,
     )
     mask = ds.run_id == run_choice
-    far = st.slider("False-alarm target on validation normal", 0.001, 0.05, 0.01, 0.001)
+    pred_run = predictions[predictions["run_id"] == run_choice].reset_index(drop=True)
 
     col_a, col_b = st.columns([1.6, 1])
     with col_a:
@@ -322,147 +309,137 @@ with tab_overview:
         ax.set_title(f"Run #{run_choice}: sensor traces")
         st.pyplot(fig)
 
-        fig2, axes = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
-        for ax_, (name, s) in zip(axes, scores.items(), strict=False):
-            thr = threshold_at_far(s[normal_val], far=far)
+        fig2, axes = plt.subplots(len(ALL_DETECTORS), 1, figsize=(10, 7), sharex=True)
+        for ax_, name in zip(axes, ALL_DETECTORS, strict=True):
             plot_detection_scores(
-                s[mask], is_anomaly=ds.is_anomaly[mask], threshold=thr, title=name, ax=ax_
+                scores[name][mask],
+                is_anomaly=ds.is_anomaly[mask],
+                threshold=pipe.far_thresholds_[name],
+                title=f"{name} (threshold @ FAR {pipe.config.far_target:.0%} on validation-normal)",
+                ax=ax_,
             )
         st.pyplot(fig2)
 
     with col_b:
-        st.markdown("**Score summary on this run**")
-        rows = []
-        for name, s in scores.items():
-            thr = threshold_at_far(s[normal_val], far=far)
-            d = detection_delay(
-                s,
-                ds.run_id,
-                ds.run_onsets,
-                ds.run_fault_id,
-                thr,
-                samples_to_minutes=ds.sample_minutes,
+        st.markdown("**What the pipeline recommends over this run**")
+        onset = int(ds.run_onsets[run_choice])
+        _alarms = pred_run.index[pred_run["alarm"]]
+        _alarms = _alarms[_alarms >= onset] if onset >= 0 else _alarms
+        first_alarm = int(_alarms.min()) if len(_alarms) else None
+        c1, c2 = st.columns(2)
+        c1.metric("fault onset", "—" if onset < 0 else f"{onset * ds.sample_minutes:.0f} min")
+        c2.metric(
+            "first confirmed alarm after onset" if onset >= 0 else "first confirmed alarm",
+            "none" if first_alarm is None else f"{first_alarm * ds.sample_minutes:.0f} min",
+            delta=None
+            if first_alarm is None or onset < 0
+            else f"{(first_alarm - onset) * ds.sample_minutes:+.0f} min vs onset",
+            delta_color="inverse",
+        )
+        if first_alarm is not None:
+            row = pred_run.iloc[first_alarm]
+            st.markdown(
+                f"At the first alarm the classifier says **{row['fault_name_pred']}** "
+                f"(confidence {row['fault_confidence']:.2f}), RUL median "
+                f"**{row['rul_p50_min']:.0f} min** "
+                f"[{row['rul_p10_min']:.0f}, {row['rul_p90_min']:.0f}] → action **`{row['action']}`**."
             )
-            rows.append(
-                {
-                    "detector": name,
-                    "threshold": round(thr, 3),
-                    "frac_detected_all_runs": round(d["fraction_detected"], 2),
-                    "median_delay_min": (
-                        round(d["median_min"], 0) if not np.isnan(d["median_min"]) else "—"
-                    ),
-                }
-            )
-        st.dataframe(pd.DataFrame(rows).set_index("detector"))
+        st.dataframe(
+            pred_run[
+                ["t_minutes", "primary_score", "alarm", "fault_name_pred", "rul_p50_min", "action"]
+            ]
+            .rename(columns={"t_minutes": "t (min)", "rul_p50_min": "RUL p50 (min)"})
+            .iloc[:: max(1, len(pred_run) // 25)],
+            height=420,
+        )
 
     st.markdown("#### How to read this view")
-    _fault_name = ds.fault_names[int(ds.run_fault_id[run_choice])]
     _is_normal = int(ds.run_fault_id[run_choice]) == 0
     if _is_normal:
         st.markdown(
-            f"""
-This is a **{_fault_name.lower()}** run — no fault is injected. The shaded
-region in the trace plot will be empty, and a well-tuned detector should
-**stay below its threshold for the entire run**. Any score that crosses up
-here would be a **false alarm** at the chosen FAR setting (currently
-**{far:.1%}**) — useful for sanity-checking the threshold calibration.
-"""
+            "This is a **normal** run. A well-calibrated pipeline should stay in `wait` for the "
+            "entire run; any confirmed alarm here is a false alarm at the chosen operating point."
         )
     else:
         st.markdown(
-            f"""
-This is a **{_fault_name}** run. Three things to look for:
-
-1. **Lead time** — how many minutes elapse between the fault onset (shaded
-   region start) and the score first crossing the dashed threshold. Shorter
-   is better.
-2. **Cleanliness** — does the score *stay* above the threshold once the fault
-   is active, or does it flicker? A noisy score forces hysteresis logic
-   downstream.
-3. **Pre-fault behaviour** — the score should hover near zero before the
-   shaded region. If it doesn't, the threshold is too tight for the chosen
-   false-alarm rate.
-
-The three detectors visibly disagree on the **hard** faults — that
-disagreement is exactly the signal an ensemble exploits.
+            """
+1. **Lead time** — minutes between the fault onset (shaded) and the first *confirmed* alarm
+   (three consecutive samples above the operating threshold, the same rule the metrics use).
+2. **Cleanliness** — does the score stay above threshold once the fault is active, or flicker?
+3. **Action** — `investigate` means the detector fired but the classifier still reads normal;
+   `schedule_maintenance` vs `intervene_now` is decided by the RUL median against the
+   configured horizon.
 """
         )
 
-# ----- Tab 2: detector comparison ------------------------------------------
+# ----- Tab 2: detector comparison ---------------------------------------------
 with tab_detect:
     st.subheader("Detector benchmark on the test split")
     rows = []
-    for name, s in scores.items():
-        thr = threshold_at_far(s[normal_val], far=0.01)
-        a = auroc(s[test], ds.is_anomaly[test])
-        tpr = true_positive_rate(s[test], ds.is_anomaly[test], thr)
-        d = detection_delay(
-            s, ds.run_id, ds.run_onsets, ds.run_fault_id, thr, samples_to_minutes=ds.sample_minutes
-        )
+    for name, r in evaluation["detection"].items():
         rows.append(
             {
                 "detector": name,
-                "AUROC": round(a, 3),
-                "TPR@FAR=1%": round(tpr, 3),
-                "frac_detected": round(d["fraction_detected"], 2),
-                "median_delay_min": (
-                    round(d["median_min"], 0) if not np.isnan(d["median_min"]) else "—"
-                ),
+                "AUROC": round(r["auroc"], 3),
+                "TPR@FAR=1%": round(r["tpr_at_far"], 3),
+                "FAR observed": round(r["far_observed"], 3),
+                "runs detected": f"{r['fraction_detected']:.0%}",
+                "median delay (min)": _fmt_delay(r["median_delay_min"]),
+                "fit (s)": round(r["fit_seconds"] or 0.0, 1),
             }
         )
     df = pd.DataFrame(rows).set_index("detector")
     st.dataframe(df)
-    st.caption("Detectors fitted on normal-only training runs; metrics on held-out test runs.")
+    st.caption(
+        f"Thresholds calibrated on validation-normal at FAR = {pipe.config.far_target:.0%}; "
+        f"metrics on {test_runs.size} held-out test runs."
+    )
 
-    # Dynamic interpretation of the live numbers
-    try:
-        _best_auc = df["AUROC"].idxmax()
-        _best_delay = df.replace("—", np.nan)["median_delay_min"].astype(float).idxmin()
-        _spread = df["AUROC"].max() - df["AUROC"].min()
-    except Exception:
-        _best_auc, _best_delay, _spread = "LSTM-AE", "LSTM-AE", 0.17
-
+    _best_auc = df["AUROC"].idxmax()
+    _delays = df["median delay (min)"].replace("—", np.nan).astype(float)
+    _best_delay = _delays.idxmin() if _delays.notna().any() else _best_auc
+    _spread = float(df["AUROC"].max() - df["AUROC"].min())
     st.markdown("#### What this tells us")
     st.markdown(
         f"""
-- **{_best_auc}** wins on AUROC ({df.loc[_best_auc, "AUROC"]:.2f}) and
-  **{_best_delay}** has the shortest median delay
-  ({df.loc[_best_delay, "median_delay_min"]} min on the runs it catches).
-- The AUROC spread across the three detectors is **{_spread:.2f}** — large
-  enough to matter operationally: at FAR = 1 %, going from the worst to the
-  best detector roughly **triples** the fraction of faults detected.
-- **None of them dominates on every metric.** T²/Q is fastest to fit and
-  trivial to interpret; IsolationForest is the speed/accuracy compromise;
-  LSTM-AE captures temporal structure the other two ignore. A production
-  system would ensemble all three and tune a fused threshold in the
-  **Decision** tab.
+- **{_best_auc}** wins on AUROC ({df.loc[_best_auc, "AUROC"]:.2f}); **{_best_delay}** has the
+  shortest median delay on the runs it catches.
+- The AUROC spread is **{_spread:.2f}** — a real operational difference at the same false-alarm
+  budget. The *observed* FAR column is the honesty check: a threshold set on validation
+  should reproduce roughly the target FAR on test.
+- The pipeline picked **{pipe.primary_detector_}** as primary detector by expected cost on the
+  validation runs. Whether it is also the cheapest on test is shown in the Decision tab.
 """
     )
 
     st.markdown("### PCA-2 projection coloured by fault")
     fid_set = st.multiselect("fault ids to show", list(range(22)), default=[0, 1, 4, 13, 14, 16])
-    sample_mask = np.isin(ds.fault_id, fid_set)
-    fig, ax = plt.subplots(figsize=(8, 6))
-    plot_pca_projection(
-        Xz[sample_mask],
-        ds.fault_id[sample_mask],
-        label_names=ds.fault_names,
-        max_classes=len(fid_set),
-        ax=ax,
-    )
-    st.pyplot(fig)
-
+    sample_mask = np.isin(ds.active_fault_id, fid_set)
+    if fid_set:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        plot_pca_projection(
+            pipe.scaler_.transform(ds.X[sample_mask]),
+            ds.active_fault_id[sample_mask],
+            label_names=ds.fault_names,
+            max_classes=len(fid_set),
+            ax=ax,
+        )
+        st.pyplot(fig)
     st.caption(
-        "Well-separated clusters = downstream diagnosis has signal to learn from. "
-        "Overlapping clusters = those faults will show up in the confusion matrix as "
-        "consistently confused pairs."
+        "Coloured by the fault *active at each sample* — pre-onset samples of faulty runs are "
+        "drawn as Normal, which is what the classifier is asked to learn."
     )
 
-# ----- Tab 3: diagnosis -----------------------------------------------------
+# ----- Tab 3: diagnosis ---------------------------------------------------------
 with tab_diag:
     st.subheader("Which fault is active? Which sensor drives it?")
-    clf, feats, fnames = fit_classifier(ds, train, windows, end_idx)
-    rep = compute_shap(clf, feats, fnames, ds.sensor_names, sample_size=400)
+    d = evaluation["diagnosis"]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("accuracy (test)", f"{d['accuracy']:.3f}")
+    c2.metric("balanced accuracy", f"{d['balanced_accuracy']:.3f}")
+    c3.metric("macro-F1", f"{d['macro_f1']:.3f}")
+
+    rep = compute_shap(lab_key, pipe, ds, test, sample_size=400)
     fig, ax = plt.subplots(figsize=(10, 7))
     plot_shap_summary(
         rep.per_sensor_class_importance, ds.sensor_names, rep.class_ids, top_k=14, ax=ax
@@ -489,27 +466,22 @@ with tab_diag:
     st.markdown("#### What this tells us")
     st.markdown(
         """
-- Every fault type ends up with **one or two dominant driver sensors** —
-  that is the lever for the mean-time-to-root-cause metric on a real plant.
-  Instead of *"something is wrong"*, the operator reads *"sensor `XMV(10)`
-  is the dominant signal, consistent with feed-loss family F02"*.
-- The SHAP summary plot makes the contribution **per sensor x per fault
-  class** visible at a glance — a process engineer can sanity-check the
-  model against domain knowledge and reject it if a driver sensor doesn't
-  physically make sense.
-- Faults that share a driver sensor (e.g. F04 and F14 both lean heavily on
-  `XMEAS(21)`) are exactly the ones the confusion matrix will mix up — a
-  **hierarchical classifier** (fault-family first, sub-type second) is the
-  natural fix.
-- Trust matters more than accuracy in regulated industries: a 0.93-AUROC
-  black box without SHAP is **not deployable**; this one is.
+- Every fault type ends up with **one or two dominant driver sensors** — the lever for
+  mean-time-to-root-cause on a real plant: *"sensor X is the dominant signal, consistent with
+  fault family Y"* instead of *"something is wrong"*.
+- Faults that share a driver sensor are exactly the pairs the confusion matrix mixes up
+  (notebook 03). A **hierarchical classifier** (fault family → sub-type) is the natural fix.
+- In a regulated environment a black box without attributions is not deployable; the SHAP
+  table is what the process engineer signs off on.
 """
     )
 
-# ----- Tab 4: decision layer ------------------------------------------------
+# ----- Tab 4: decision layer ---------------------------------------------------
 with tab_decide:
-    st.subheader("Pick the cost model → see the optimal threshold")
-    det_choice = st.selectbox("detector", list(scores.keys()), index=1)
+    st.subheader("Pick the cost model → see the optimal threshold on test runs")
+    det_choice = st.selectbox(
+        "detector", list(ALL_DETECTORS), index=list(ALL_DETECTORS).index(pipe.primary_detector_)
+    )
     col1, col2, col3 = st.columns(3)
     with col1:
         fa = st.number_input("false alarm cost (CHF)", 0.0, 10_000.0, 100.0, 10.0)
@@ -530,9 +502,17 @@ with tab_decide:
         cost=cost,
         n_grid=50,
         samples_to_minutes=ds.sample_minutes,
+        consecutive=pipe.config.consecutive,
     )
     fig, ax = plt.subplots(figsize=(9, 4))
     plot_cost_curve(grid, results, ax=ax)
+    ax.axvline(
+        pipe.decision_thresholds_[det_choice],
+        color="#10b981",
+        linestyle=":",
+        label="threshold chosen on validation",
+    )
+    ax.legend()
     st.pyplot(fig)
 
     best = optimal_threshold(
@@ -542,48 +522,150 @@ with tab_decide:
         ds.run_fault_id,
         cost=cost,
         samples_to_minutes=ds.sample_minutes,
+        consecutive=pipe.config.consecutive,
+    )
+    deployed = evaluation["decision"][det_choice]
+    st.markdown(
+        "**Oracle optimum on test** (what you would get if you could tune on test) vs **deployed threshold** (chosen on validation at the reference cost mix):"
     )
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("optimal threshold", f"{best.threshold:.3f}")
-    c2.metric("expected cost", f"{best.expected_cost:,.0f} CHF")
-    c3.metric("false alarms", f"{best.false_alarms}")
-    c4.metric("missed faults", f"{best.missed_faults}")
-    st.caption(
-        f"Detector **{det_choice}** at this cost mix: "
-        f"mean detection delay **{best.mean_delay_min:.1f} min** on {best.n_faulty_runs} faulty test runs."
+    c1.metric(
+        "threshold",
+        f"{best.threshold:.3f}",
+        delta=f"deployed {deployed['threshold']:.3f}",
+        delta_color="off",
+    )
+    c2.metric(
+        "expected cost",
+        f"{best.expected_cost:,.0f} CHF",
+        delta=f"deployed {deployed['expected_cost']:,.0f}",
+        delta_color="off",
+    )
+    c3.metric(
+        "false alarms",
+        f"{best.false_alarms}",
+        delta=f"deployed {deployed['false_alarms']}",
+        delta_color="off",
+    )
+    c4.metric(
+        "missed faults",
+        f"{best.missed_faults}",
+        delta=f"deployed {deployed['missed_faults']}",
+        delta_color="off",
     )
 
     _ratio = mf / max(fa, 1e-6)
-    if best.missed_faults == 0:
-        _miss_msg = (
-            "Zero missed faults at the optimum — the cost mix puts enough weight on missed "
-            "faults that the detector is forced into a high-recall regime."
-        )
-    else:
-        _miss_msg = (
-            f"The optimum *accepts* **{best.missed_faults} missed fault(s)** because the "
-            f"alternative — pulling the threshold down to catch them — would generate more "
-            f"false-alarm cost than the missed-fault cost saves."
-        )
-
     st.markdown("#### What this tells us")
     st.markdown(
         f"""
-- The optimum is **not** the same as the highest-AUROC operating point — it
-  is the threshold that **minimises total expected cost** under your
-  specific cost mix. Right now your missed-to-false-alarm ratio is
-  **{_ratio:.0f} : 1**.
-- {_miss_msg}
-- Lowering the false-alarm cost (or raising the missed-fault cost) shifts
-  the optimum **down** — the detector becomes more eager. Try it: drag the
-  *missed fault cost* up to 20 000 CHF and watch the threshold drop and
-  the false-alarm count rise.
-- This is the conversation the model team needs to have with finance and
-  operations. *They* set the cost mix; *we* deliver the calibrated curve.
-  That separation of concerns is what makes the model **trustworthy to
-  deploy**.
+- The optimum is **not** the highest-AUROC operating point — it is the threshold that minimises
+  total expected cost under *your* cost mix (currently missed : false-alarm = **{_ratio:.0f} : 1**).
+- The gap between the oracle and the deployed threshold is the price of choosing the operating
+  point on validation instead of peeking at test — that is the number to report to the business.
+- Lowering the false-alarm cost or raising the missed-fault cost shifts the optimum **down**: the
+  detector becomes more eager. Drag *missed fault cost* to 20 000 CHF and watch the false-alarm
+  count rise.
+- *They* set the cost mix; *we* deliver the calibrated curve. That separation of concerns is what
+  makes the model negotiable with finance and operations.
 """
     )
+
+# ----- Tab 5: operate -----------------------------------------------------------
+with tab_operate:
+    st.subheader("What the plant team actually receives")
+    st.markdown(
+        """
+`sensorlab train` saves the fitted pipeline plus a manifest; `sensorlab score --input batch.csv`
+returns one row per sample with scores, confirmed alarm, diagnosed fault, RUL interval and the
+recommended action. The tables below are that output on the held-out test runs.
+"""
+    )
+
+    summary_rows = []
+    for rid, g in predictions.groupby("run_id"):
+        g = g.reset_index(drop=True)
+        onset = int(ds.run_onsets[rid])
+        true_fault = int(ds.run_fault_id[rid])
+        alarms = g.index[g["alarm"]]
+        pre = alarms[alarms < onset] if onset >= 0 else alarms
+        post = alarms[alarms >= onset] if onset >= 0 else alarms[:0]
+        first = int(post.min()) if len(post) else None
+        if true_fault == 0:
+            outcome = "false alarm" if len(alarms) else "clean"
+        else:
+            outcome = "caught" if first is not None else "missed"
+        summary_rows.append(
+            {
+                "run": int(rid),
+                "true fault": ds.fault_names[true_fault],
+                "onset (min)": None if onset < 0 else onset * ds.sample_minutes,
+                "first alarm after onset (min)": None
+                if first is None
+                else first * ds.sample_minutes,
+                "delay (min)": None if first is None else (first - onset) * ds.sample_minutes,
+                "pre-onset false alarms": len(pre) if true_fault > 0 else len(alarms),
+                "diagnosed at alarm": None if first is None else g.loc[first, "fault_name_pred"],
+                "RUL p50 at alarm": None
+                if first is None
+                else round(float(g.loc[first, "rul_p50_min"])),
+                "final action": g["action"].iloc[-1],
+                "outcome": outcome,
+            }
+        )
+    summary = pd.DataFrame(summary_rows).set_index("run")
+    outcome_counts = summary["outcome"].value_counts().to_dict()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(
+        "faulty runs caught",
+        f"{outcome_counts.get('caught', 0)} / {outcome_counts.get('caught', 0) + outcome_counts.get('missed', 0)}",
+    )
+    c2.metric(
+        "normal runs with a false alarm",
+        f"{outcome_counts.get('false alarm', 0)} / {outcome_counts.get('false alarm', 0) + outcome_counts.get('clean', 0)}",
+    )
+    c3.metric("alarm precision (samples)", f"{evaluation['actions']['alarm_precision']:.2f}")
+    c4.metric("alarm recall (samples)", f"{evaluation['actions']['alarm_recall']:.2f}")
+    st.dataframe(summary, height=380)
+
+    st.download_button(
+        "Download scored test runs (CSV)",
+        predictions.to_csv(index=False).encode(),
+        file_name="sensorlab_scored_test_runs.csv",
+        mime="text/csv",
+    )
+
+    st.markdown("### Drift check: has the plant changed under the model?")
+    st.markdown(
+        "The pipeline stores a compact reference of the training-normal distribution and reports "
+        "a per-sensor **Population Stability Index** on every batch. Simulate a sensor "
+        "recalibration and watch the monitor react before the detectors start lying."
+    )
+    normal_test_runs = [int(r) for r in test_runs if ds.run_fault_id[r] == 0]
+    if normal_test_runs:
+        c1, c2 = st.columns(2)
+        drift_sensor = c1.selectbox("sensor to recalibrate", ds.sensor_names, index=0)
+        drift_shift = c2.slider("offset (in training std units)", 0.0, 3.0, 0.0, 0.25)
+        batch = ds.X[ds.run_mask(normal_test_runs)].copy()
+        j = ds.sensor_names.index(drift_sensor)
+        batch[:, j] += drift_shift * float(pipe.scaler_.std[j])
+        rep = pipe.check_drift(batch)
+        status_colour = {"stable": "🟢", "watch": "🟡", "alert": "🔴"}[rep.status]
+        st.markdown(
+            f"**Status: {status_colour} {rep.status}** on {rep.n_current} samples of normal test runs"
+        )
+        psi = pd.Series(rep.psi).sort_values(ascending=False)
+        st.bar_chart(psi.head(12))
+        if rep.alert:
+            st.warning(
+                f"PSI ≥ {pipe.drift_.alert_threshold}: {', '.join(rep.alert)} — do not trust alarms on these sensors until retrained."
+            )
+        elif rep.watch:
+            st.info(f"PSI in the watch band: {', '.join(rep.watch)}.")
+    else:
+        st.info("No normal runs in the test split for this configuration — increase *normal runs*.")
+
+    with st.expander("Pipeline manifest (what ships with the model)"):
+        st.json(pipe.manifest(), expanded=False)
 
 st.markdown("---")
 st.caption(
