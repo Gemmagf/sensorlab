@@ -41,6 +41,8 @@
   `/api/drift`, …) and a static **governance dashboard** (acceptance gates, ownership,
   benchmark, cost curve, run inspector, SHAP, drift simulator, upload-and-score, audit log) in
   plain HTML/SVG. `Dockerfile` with the reference model trained at build time.
+- `docs/guide.md` user guide, and the same guide inside the dashboard behind a "How to use it"
+  button (opens on the first visit).
 - Notebook 06 (end-to-end pipeline), CI smoke test of the CLI, `docs/runbook.md`.
 - 110 tests (was 65).
 

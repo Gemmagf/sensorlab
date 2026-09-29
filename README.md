@@ -26,6 +26,11 @@ forward-deployed engineer hands a model to the people who will live with it.
 
 ## 🚀 Quick start
 
+New here? Read the **[user guide](docs/guide.md)** (install, CLI, Python API, how to read every
+output and every dashboard section, bringing your own plant, FAQ). The dashboard has the same
+guide behind its **"? How to use it"** button. Operating a deployed model? The
+**[runbook](docs/runbook.md)**.
+
 ```bash
 make install                         # .venv (Python 3.11), CPU torch, app + dev extras
 make test                            # 110 tests, ~30 s
@@ -251,6 +256,7 @@ src/sensorlab/
 ├── server/              FastAPI app, static export, governance dashboard (index.html, app.js, styles.css)
 └── viz/                 matplotlib helpers
 notebooks/               01_eda … 06_pipeline (generated + executed)
+docs/guide.md            user guide (install, CLI, API, reading outputs and the dashboard, FAQ)
 docs/runbook.md          operations runbook
 .github/workflows/       ci.yml (lint, tests, CLI smoke) · pages.yml (train, export, deploy to GitHub Pages)
 Dockerfile               optional live API: python:3.11-slim, CPU torch, model trained at build

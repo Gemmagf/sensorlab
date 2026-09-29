@@ -313,6 +313,17 @@
   try { applyTheme(localStorage.getItem("sensorlab-theme") || "light"); } catch { applyTheme("light"); }
   $("#theme-toggle").addEventListener("click", () => { const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark"; applyTheme(next); try { localStorage.setItem("sensorlab-theme", next); } catch {} });
 
+  // ------------------------------------------------------------------ how-to dialog
+  (() => {
+    const dlg = $("#howto"); if (!dlg) return;
+    const open = () => { dlg.showModal(); $(".howto-body").scrollTop = 0; };
+    $("#howto-btn").addEventListener("click", open);
+    $("#howto-close").addEventListener("click", () => dlg.close());
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });   // click on the backdrop
+    dlg.querySelectorAll(".howto-toc a").forEach((l) => l.addEventListener("click", (e) => { e.preventDefault(); const t = dlg.querySelector(l.getAttribute("href")); if (t) t.scrollIntoView({ block: "start", behavior: "smooth" }); }));
+    try { if (!localStorage.getItem("sensorlab-howto-seen")) { open(); localStorage.setItem("sensorlab-howto-seen", "1"); } } catch {}
+  })();
+
   // ------------------------------------------------------------------ boot
   async function boot() {
     try {
